@@ -42,9 +42,9 @@ Status bar widgets that invoke external CLI processes on a timer can cause conti
   - `󰚩 off`: Herdr offline or disconnected.
 - **Multi-Agent & Subagent Support**: Automatically aggregates and tracks all active agents across workspaces, tabs, and split panes.
 - **Interactive Controls**:
-  - **Left-Click**: Instantly focuses the most active or blocked agent pane (`herdr agent focus`).
-  - **Right-Click**: Brings up the terminal workspace.
-- **Detailed Tooltip**: Hovering reveals a per-agent breakdown with names, workspace/pane IDs (`wD:p3`), and working directories.
+  - **Left-Click**: Toggles a rich summary popup card listing every live agent, their status badges, pane handles, and working directories. Clicking an individual agent row immediately focuses that agent!
+  - **Right-Click**: Instantly jumps to the Herdr terminal screen and brings the active window into focus.
+- **Detailed Hover Preview**: Hovering over the widget displays a clean, multi-line status breakdown without opening the full panel.
 
 ---
 
@@ -78,7 +78,7 @@ omarchy-herdr-status/
 Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/eddiechan/omarchy-herdr-status.git
+git clone https://github.com/unrealandychan/omarchy-herdr-status.git
 cd omarchy-herdr-status
 chmod +x install.sh
 ./install.sh

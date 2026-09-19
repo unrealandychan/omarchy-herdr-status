@@ -13,8 +13,10 @@ cargo build --release
 
 echo "==> Installing binary to $BIN_DEST..."
 mkdir -p "$HOME/.local/bin"
-cp "$SCRIPT_DIR/target/release/herdr-status-bridge" "$BIN_DEST"
-chmod +x "$BIN_DEST"
+install -m 755 "$SCRIPT_DIR/target/release/herdr-status-bridge" "$BIN_DEST"
+
+echo "==> Installing herdr-focus helper to $HOME/.local/bin/herdr-focus..."
+install -m 755 "$SCRIPT_DIR/scripts/focus-herdr.sh" "$HOME/.local/bin/herdr-focus"
 
 echo "==> Linking Quickshell plugin to $PLUGIN_DEST..."
 mkdir -p "$(dirname "$PLUGIN_DEST")"
