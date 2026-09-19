@@ -1,0 +1,23 @@
+[package]
+name = "omarchy-herdr-status"
+version = "0.1.0"
+edition = "2021"
+authors = ["Eddie Chan <eddie.chan@connect.ust.hk>"]
+description = "Ultra-low-resource status bridge and Quickshell plugin for Herdr AI coding agents"
+license = "MIT"
+repository = "https://github.com/eddiechan/omarchy-herdr-status"
+
+[[bin]]
+name = "herdr-status-bridge"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
