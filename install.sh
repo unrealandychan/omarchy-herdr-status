@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="$HOME/.local/bin/herdr-status-bridge"
-PLUGIN_SRC="$SCRIPT_DIR/plugin"
+PLUGIN_SRC="$SCRIPT_DIR"
 PLUGIN_DEST="$HOME/.config/omarchy/plugins/arch.herdr-status"
 SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
 
