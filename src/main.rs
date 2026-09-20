@@ -42,7 +42,7 @@ pub struct StatusPayload {
     pub summary: StatusSummary,
 }
 
-fn compute_summary(agents: &[AgentInfo], connected: bool) -> StatusSummary {
+pub fn compute_summary(agents: &[AgentInfo], connected: bool) -> StatusSummary {
     if !connected && agents.is_empty() {
         return StatusSummary {
             total: 0,
@@ -65,7 +65,7 @@ fn compute_summary(agents: &[AgentInfo], connected: bool) -> StatusSummary {
     let mut unknown = 0;
 
     for a in agents {
-        match a.status.as_str() {
+        match a.status.trim().to_lowercase().as_str() {
             "working" => working += 1,
             "blocked" => blocked += 1,
             "done" => done += 1,
@@ -103,12 +103,19 @@ fn compute_summary(agents: &[AgentInfo], connected: bool) -> StatusSummary {
             format!("󰄬 {} done", done),
             "done".to_string(),
         )
-    } else {
+    } else if idle > 0 {
         (
             "idle".to_string(),
             "󰌒".to_string(),
             format!("󰌒 {} ready", total),
             "foreground".to_string(),
+        )
+    } else {
+        (
+            "unknown".to_string(),
+            "󰚩".to_string(),
+            format!("󰚩 {} active", total),
+            "muted".to_string(),
         )
     };
 
@@ -262,6 +269,117 @@ fn fetch_agents_snapshot(socket_path: &Path) -> Result<HashMap<String, AgentInfo
     Ok(agent_map)
 }
 
+pub fn process_event_json(
+    trimmed: &str,
+    agents_map: &mut HashMap<String, AgentInfo>,
+) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+        return false;
+    };
+
+    let Some(event) = v.get("event").and_then(|e| e.as_str()) else {
+        return false;
+    };
+
+    let mut changed = false;
+
+    match event {
+        "pane_agent_status_changed" => {
+            let data = v.get("data").unwrap_or(&v);
+            let pane_id = data.get("pane_id").and_then(|p| p.as_str()).unwrap_or("");
+            let new_status = data
+                .get("agent_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+
+            if !pane_id.is_empty() && !new_status.is_empty() {
+                if let Some(agent) = agents_map.get_mut(pane_id) {
+                    if agent.status != new_status {
+                        agent.status = new_status.to_string();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        "pane_agent_detected" => {
+            if let Some(data) = v.get("data") {
+                let pane_id = data["pane_id"].as_str().unwrap_or("");
+                let released = data["released"].as_bool().unwrap_or(false);
+
+                if !pane_id.is_empty() {
+                    if released {
+                        if agents_map.remove(pane_id).is_some() {
+                            changed = true;
+                        }
+                    } else if let Some(agent_name) = data["agent"].as_str() {
+                        let workspace_id = data["workspace_id"].as_str().unwrap_or("");
+                        let entry = agents_map.entry(pane_id.to_string()).or_insert_with(|| AgentInfo {
+                            name: agent_name.to_string(),
+                            status: "working".to_string(),
+                            pane_id: pane_id.to_string(),
+                            workspace_id: workspace_id.to_string(),
+                            tab_id: "".to_string(),
+                            title: agent_name.to_string(),
+                            cwd: "~".to_string(),
+                            focused: false,
+                            source: "herdr".to_string(),
+                        });
+                        entry.name = agent_name.to_string();
+                        changed = true;
+                    }
+                }
+            }
+        }
+        "pane_updated" => {
+            if let Some(pane) = v.get("data").and_then(|d| d.get("pane")) {
+                let pane_id = pane["pane_id"].as_str().unwrap_or("");
+                if !pane_id.is_empty() {
+                    let agent_name = pane.get("agent").and_then(|a| a.as_str());
+                    if let Some(name) = agent_name {
+                        let status = pane["agent_status"].as_str().unwrap_or("unknown");
+                        let cwd = pane["cwd"].as_str().unwrap_or("~");
+                        let title = pane["terminal_title"].as_str().unwrap_or(name);
+                        let workspace_id = pane["workspace_id"].as_str().unwrap_or("");
+                        let tab_id = pane["tab_id"].as_str().unwrap_or("");
+                        let focused = pane["focused"].as_bool().unwrap_or(false);
+
+                        let info = AgentInfo {
+                            name: name.to_string(),
+                            status: status.to_string(),
+                            pane_id: pane_id.to_string(),
+                            workspace_id: workspace_id.to_string(),
+                            tab_id: tab_id.to_string(),
+                            title: title.to_string(),
+                            cwd: cwd.to_string(),
+                            focused,
+                            source: "herdr".to_string(),
+                        };
+
+                        if agents_map.get(pane_id) != Some(&info) {
+                            agents_map.insert(pane_id.to_string(), info);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        "pane_closed" | "pane_exited" => {
+            if let Some(pane_id) = v
+                .get("data")
+                .and_then(|d| d.get("pane_id"))
+                .and_then(|p| p.as_str())
+            {
+                if agents_map.remove(pane_id).is_some() {
+                    changed = true;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    changed
+}
+
 fn stream_events_loop(
     socket_path: &Path,
     mut agents_map: HashMap<String, AgentInfo>,
@@ -281,8 +399,8 @@ fn stream_events_loop(
     }
 
     let mut stream = UnixStream::connect(socket_path)?;
-    // Read timeout for periodic health sync (every 6 seconds)
-    stream.set_read_timeout(Some(Duration::from_millis(6000)))?;
+    // Read timeout for periodic snapshot sync (every 1 second)
+    stream.set_read_timeout(Some(Duration::from_millis(1000)))?;
 
     let sub_req = json!({
         "id": "event_sub",
@@ -301,125 +419,22 @@ fn stream_events_loop(
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
+    let mut last_snapshot_sync = std::time::Instant::now();
 
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
+        let read_res = reader.read_line(&mut line);
+
+        match read_res {
             Ok(0) => {
                 // Herdr server disconnected
                 return Ok(());
             }
             Ok(_) => {
                 let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                    if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
-                        let mut changed = false;
-
-                        match event {
-                            "pane_agent_detected" => {
-                                if let Some(data) = v.get("data") {
-                                    let pane_id = data["pane_id"].as_str().unwrap_or("");
-                                    let released = data["released"].as_bool().unwrap_or(false);
-
-                                    if !pane_id.is_empty() {
-                                        if released {
-                                            if agents_map.remove(pane_id).is_some() {
-                                                changed = true;
-                                            }
-                                        } else if let Some(agent_name) = data["agent"].as_str() {
-                                            let workspace_id = data["workspace_id"].as_str().unwrap_or("");
-                                            let entry = agents_map.entry(pane_id.to_string()).or_insert_with(|| AgentInfo {
-                                                name: agent_name.to_string(),
-                                                status: "unknown".to_string(),
-                                                pane_id: pane_id.to_string(),
-                                                workspace_id: workspace_id.to_string(),
-                                                tab_id: "".to_string(),
-                                                title: agent_name.to_string(),
-                                                cwd: "~".to_string(),
-                                                focused: false,
-                                                source: "herdr".to_string(),
-                                            });
-                                            entry.name = agent_name.to_string();
-                                            changed = true;
-                                        }
-                                    }
-                                }
-                            }
-                            "pane_updated" => {
-                                if let Some(pane) = v.get("data").and_then(|d| d.get("pane")) {
-                                    let pane_id = pane["pane_id"].as_str().unwrap_or("");
-                                    if !pane_id.is_empty() {
-                                        let agent_name = pane.get("agent").and_then(|a| a.as_str());
-                                        if let Some(name) = agent_name {
-                                            let status = pane["agent_status"].as_str().unwrap_or("unknown");
-                                            let cwd = pane["cwd"].as_str().unwrap_or("~");
-                                            let title = pane["terminal_title"].as_str().unwrap_or(name);
-                                            let workspace_id = pane["workspace_id"].as_str().unwrap_or("");
-                                            let tab_id = pane["tab_id"].as_str().unwrap_or("");
-                                            let focused = pane["focused"].as_bool().unwrap_or(false);
-
-                                            agents_map.insert(
-                                                pane_id.to_string(),
-                                                AgentInfo {
-                                                    name: name.to_string(),
-                                                    status: status.to_string(),
-                                                    pane_id: pane_id.to_string(),
-                                                    workspace_id: workspace_id.to_string(),
-                                                    tab_id: tab_id.to_string(),
-                                                    title: title.to_string(),
-                                                    cwd: cwd.to_string(),
-                                                    focused,
-                                                    source: "herdr".to_string(),
-                                                },
-                                            );
-                                            changed = true;
-                                        } else {
-                                            // No agent in this pane
-                                            if agents_map.remove(pane_id).is_some() {
-                                                changed = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            "pane_closed" | "pane_exited" => {
-                                if let Some(pane_id) = v.get("data").and_then(|d| d.get("pane_id")).and_then(|p| p.as_str()) {
-                                    if agents_map.remove(pane_id).is_some() {
-                                        changed = true;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        if changed {
-                            let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
-                            if list.is_empty() {
-                                // Fallback to system agents if any
-                                list = detect_standalone_agents();
-                            }
-                            let summary = compute_summary(&list, true);
-                            emit_payload(&StatusPayload {
-                                connected: true,
-                                agents: list,
-                                summary,
-                            });
-                        }
-                    }
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // Heartbeat sync: check if any snapshot changes or standalone agents
-                if let Ok(fresh) = fetch_agents_snapshot(socket_path) {
-                    if fresh != agents_map {
-                        agents_map = fresh;
+                if !trimmed.is_empty() {
+                    let changed = process_event_json(trimmed, &mut agents_map);
+                    if changed {
                         let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
                         if list.is_empty() {
                             list = detect_standalone_agents();
@@ -433,8 +448,34 @@ fn stream_events_loop(
                     }
                 }
             }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // Timeout is normal; periodic sync below handles snapshot refresh
+            }
             Err(e) => {
                 return Err(Box::new(e));
+            }
+        }
+
+        // Periodic ground-truth sync: query Herdr socket every 1500ms to eliminate any state mismatch
+        if last_snapshot_sync.elapsed() >= Duration::from_millis(1500) {
+            last_snapshot_sync = std::time::Instant::now();
+            if let Ok(fresh) = fetch_agents_snapshot(socket_path) {
+                if fresh != agents_map {
+                    agents_map = fresh;
+                    let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
+                    if list.is_empty() {
+                        list = detect_standalone_agents();
+                    }
+                    let summary = compute_summary(&list, true);
+                    emit_payload(&StatusPayload {
+                        connected: true,
+                        agents: list,
+                        summary,
+                    });
+                }
             }
         }
     }
@@ -482,5 +523,240 @@ fn main() {
         }
 
         std::thread::sleep(Duration::from_millis(2500));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_agent(name: &str, status: &str, pane_id: &str) -> AgentInfo {
+        AgentInfo {
+            name: name.to_string(),
+            status: status.to_string(),
+            pane_id: pane_id.to_string(),
+            workspace_id: "w1".to_string(),
+            tab_id: "w1:t1".to_string(),
+            title: name.to_string(),
+            cwd: "/home/arch".to_string(),
+            focused: false,
+            source: "herdr".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_compute_summary_disconnected() {
+        let summary = compute_summary(&[], false);
+        assert_eq!(summary.primary_status, "disconnected");
+        assert_eq!(summary.badge_text, "󰚩 off");
+        assert_eq!(summary.status_color, "muted");
+        assert_eq!(summary.total, 0);
+    }
+
+    #[test]
+    fn test_compute_summary_empty_connected() {
+        let summary = compute_summary(&[], true);
+        assert_eq!(summary.primary_status, "idle");
+        assert_eq!(summary.badge_text, "󰚩 0");
+        assert_eq!(summary.badge_icon, "󰚩");
+        assert_eq!(summary.status_color, "muted");
+        assert_eq!(summary.total, 0);
+    }
+
+    #[test]
+    fn test_compute_summary_blocked_takes_highest_precedence() {
+        // If any agent is blocked, urgent color and blocked badge must be shown
+        let agents = vec![
+            make_agent("agent-1", "working", "w1:p1"),
+            make_agent("agent-2", "blocked", "w1:p2"),
+            make_agent("agent-3", "done", "w1:p3"),
+            make_agent("agent-4", "idle", "w1:p4"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.blocked, 1);
+        assert_eq!(summary.working, 1);
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.idle, 1);
+        assert_eq!(summary.primary_status, "blocked");
+        assert_eq!(summary.badge_text, "󰅚 1 blocked");
+        assert_eq!(summary.badge_icon, "󰅚");
+        assert_eq!(summary.status_color, "urgent");
+    }
+
+    #[test]
+    fn test_compute_summary_multiple_blocked() {
+        let agents = vec![
+            make_agent("agent-1", "blocked", "w1:p1"),
+            make_agent("agent-2", "blocked", "w1:p2"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.blocked, 2);
+        assert_eq!(summary.primary_status, "blocked");
+        assert_eq!(summary.badge_text, "󰅚 2 blocked");
+        assert_eq!(summary.status_color, "urgent");
+    }
+
+    #[test]
+    fn test_compute_summary_working_precedence_over_done_and_idle() {
+        let agents = vec![
+            make_agent("agent-1", "working", "w1:p1"),
+            make_agent("agent-2", "done", "w1:p2"),
+            make_agent("agent-3", "idle", "w1:p3"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.working, 1);
+        assert_eq!(summary.blocked, 0);
+        assert_eq!(summary.primary_status, "working");
+        assert_eq!(summary.badge_text, "󱑎 1 working");
+        assert_eq!(summary.badge_icon, "󱑎");
+        assert_eq!(summary.status_color, "accent");
+    }
+
+    #[test]
+    fn test_compute_summary_done_when_all_complete() {
+        let agents = vec![
+            make_agent("agent-1", "done", "w1:p1"),
+            make_agent("agent-2", "done", "w1:p2"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.done, 2);
+        assert_eq!(summary.working, 0);
+        assert_eq!(summary.blocked, 0);
+        assert_eq!(summary.primary_status, "done");
+        assert_eq!(summary.badge_text, "󰄬 2 done");
+        assert_eq!(summary.badge_icon, "󰄬");
+        assert_eq!(summary.status_color, "done");
+    }
+
+    #[test]
+    fn test_compute_summary_idle_ready() {
+        let agents = vec![
+            make_agent("agent-1", "idle", "w1:p1"),
+            make_agent("agent-2", "idle", "w1:p2"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.idle, 2);
+        assert_eq!(summary.primary_status, "idle");
+        assert_eq!(summary.badge_text, "󰌒 2 ready");
+        assert_eq!(summary.badge_icon, "󰌒");
+        assert_eq!(summary.status_color, "foreground");
+    }
+
+    #[test]
+    fn test_compute_summary_case_and_whitespace_normalization() {
+        let agents = vec![
+            make_agent("agent-1", "  Blocked  ", "w1:p1"),
+            make_agent("agent-2", "WORKING", "w1:p2"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.blocked, 1);
+        assert_eq!(summary.working, 1);
+        assert_eq!(summary.primary_status, "blocked");
+        assert_eq!(summary.badge_text, "󰅚 1 blocked");
+    }
+
+    #[test]
+    fn test_process_event_pane_agent_status_changed() {
+        let mut map = HashMap::new();
+        map.insert("w1:p1".to_string(), make_agent("agent-1", "working", "w1:p1"));
+
+        let event_json = r#"{
+            "event": "pane_agent_status_changed",
+            "data": {
+                "type": "pane_agent_status_changed",
+                "pane_id": "w1:p1",
+                "workspace_id": "w1",
+                "agent_status": "blocked"
+            }
+        }"#;
+
+        let changed = process_event_json(event_json, &mut map);
+        assert!(changed, "Expected status change to be handled");
+        assert_eq!(map["w1:p1"].status, "blocked");
+
+        // Transition back to working
+        let event_json_working = r#"{
+            "event": "pane_agent_status_changed",
+            "data": {
+                "type": "pane_agent_status_changed",
+                "pane_id": "w1:p1",
+                "workspace_id": "w1",
+                "agent_status": "working"
+            }
+        }"#;
+        let changed2 = process_event_json(event_json_working, &mut map);
+        assert!(changed2);
+        assert_eq!(map["w1:p1"].status, "working");
+    }
+
+    #[test]
+    fn test_process_event_pane_agent_detected_and_released() {
+        let mut map = HashMap::new();
+
+        // Agent detected
+        let detect_json = r#"{
+            "event": "pane_agent_detected",
+            "data": {
+                "type": "pane_agent_detected",
+                "pane_id": "w1:p5",
+                "workspace_id": "w1",
+                "agent": "codex",
+                "released": false
+            }
+        }"#;
+        let changed = process_event_json(detect_json, &mut map);
+        assert!(changed);
+        assert!(map.contains_key("w1:p5"));
+        assert_eq!(map["w1:p5"].name, "codex");
+
+        // Agent released
+        let release_json = r#"{
+            "event": "pane_agent_detected",
+            "data": {
+                "type": "pane_agent_detected",
+                "pane_id": "w1:p5",
+                "workspace_id": "w1",
+                "released": true
+            }
+        }"#;
+        let changed2 = process_event_json(release_json, &mut map);
+        assert!(changed2);
+        assert!(!map.contains_key("w1:p5"));
+    }
+
+    #[test]
+    fn test_process_event_pane_closed() {
+        let mut map = HashMap::new();
+        map.insert("w1:p1".to_string(), make_agent("agent-1", "working", "w1:p1"));
+
+        let closed_json = r#"{
+            "event": "pane_closed",
+            "data": {
+                "pane_id": "w1:p1"
+            }
+        }"#;
+        let changed = process_event_json(closed_json, &mut map);
+        assert!(changed);
+        assert!(!map.contains_key("w1:p1"));
+    }
+
+    #[test]
+    fn test_status_payload_roundtrip() {
+        let agents = vec![make_agent("pi", "blocked", "wG:p1")];
+        let summary = compute_summary(&agents, true);
+        let payload = StatusPayload {
+            connected: true,
+            agents,
+            summary,
+        };
+
+        let serialized = serde_json::to_string(&payload).expect("Serialization failed");
+        let parsed: Value = serde_json::from_str(&serialized).expect("Deserialization failed");
+
+        assert_eq!(parsed["connected"], true);
+        assert_eq!(parsed["summary"]["blocked"], 1);
+        assert_eq!(parsed["summary"]["primary_status"], "blocked");
+        assert_eq!(parsed["agents"][0]["name"], "pi");
     }
 }

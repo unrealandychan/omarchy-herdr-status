@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "arch.herdr-status",
   "name": "Herdr Agent Status",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Eddie Chan",
   "description": "Visualizes real-time Herdr AI coding agent status on the navigation bar with ultra-low CPU and RAM footprint",
   "kinds": [

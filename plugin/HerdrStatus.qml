@@ -22,19 +22,48 @@ BarWidget {
   property string statusColorRole: "muted"
   property bool popupOpen: false
 
+  // Omarchy Shell panel contract: opened, open(), close(), toggle()
+  readonly property bool opened: popupOpen
+
+  function open() {
+    root.openPopup()
+  }
+
   function close() {
     root.popupOpen = false
+    if (root.bar && typeof root.bar.releasePopout === "function" && root.bar.activePopout === root) {
+      root.bar.releasePopout(root)
+    }
   }
 
   function closeForPopoutSwitch() {
     root.close()
   }
 
+  function openPopup() {
+    root.popupOpen = true
+    if (root.bar && typeof root.bar.requestPopout === "function") {
+      root.bar.requestPopout(root)
+    }
+  }
+
   function togglePopup() {
-    if (root.popupOpen) {
+    if (root.popupOpen || (popup && popup.open)) {
       root.close()
     } else {
-      root.popupOpen = true
+      root.openPopup()
+    }
+  }
+
+  function toggle() {
+    root.togglePopup()
+  }
+
+  function triggerPress(button) {
+    if (button === Qt.RightButton) {
+      root.switchToHerdr(root.getFirstActionablePane())
+    } else {
+      root.togglePopup()
     }
   }
 
@@ -158,13 +187,7 @@ BarWidget {
     active: root.hasUrgent || root.isWorking || root.isDone
     activeColor: root.widgetActiveColor
     onPressed: function(btn) {
-      if (btn === Qt.RightButton) {
-        // Right click: jump directly to Herdr screen
-        root.switchToHerdr(root.getFirstActionablePane())
-      } else {
-        // Left click: toggle the summary popup panel
-        root.togglePopup()
-      }
+      root.triggerPress(btn)
     }
   }
 
@@ -175,8 +198,8 @@ BarWidget {
     owner: root
     open: root.popupOpen
     onOpenChanged: {
-      if (!open && root.popupOpen) {
-        root.popupOpen = false
+      if (open !== root.popupOpen) {
+        root.popupOpen = open
       }
     }
     contentWidth: popup.fittedContentWidth(Style.space(380))
