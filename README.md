@@ -93,6 +93,30 @@ The installer will:
 
 ---
 
+## Removal & Uninstallation
+
+To completely remove Herdr Agent Status:
+
+```bash
+chmod +x uninstall.sh
+./uninstall.sh
+```
+
+Or manually remove the installed artifacts:
+
+```bash
+# 1. Remove binaries
+rm -f ~/.local/bin/herdr-status-bridge ~/.local/bin/herdr-focus
+
+# 2. Remove Quickshell plugin link
+rm -rf ~/.config/omarchy/plugins/arch.herdr-status
+
+# 3. Remove "arch.herdr-status" from ~/.config/omarchy/shell.json and rescan
+omarchy-shell shell rescanPlugins
+```
+
+---
+
 ## Standalone Usage
 
 The Rust bridge binary can also be used independently from the command line:
