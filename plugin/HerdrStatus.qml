@@ -22,6 +22,28 @@ BarWidget {
   property string statusColorRole: "muted"
   property bool popupOpen: false
 
+  function close() {
+    root.popupOpen = false
+  }
+
+  function closeForPopoutSwitch() {
+    root.close()
+  }
+
+  function togglePopup() {
+    if (root.popupOpen) {
+      root.close()
+    } else {
+      root.popupOpen = true
+    }
+  }
+
+  onPopupOpenChanged: {
+    if (popup && popup.open !== root.popupOpen) {
+      popup.open = root.popupOpen
+    }
+  }
+
   readonly property bool hasUrgent: blockedAgents > 0
   readonly property bool isWorking: workingAgents > 0
   readonly property bool isDone: doneAgents > 0 && !isWorking && !hasUrgent
@@ -85,7 +107,7 @@ BarWidget {
     } else {
       Quickshell.execDetached(["herdr-focus", targetPane || ""])
     }
-    root.popupOpen = false
+    root.close()
   }
 
   function getFirstActionablePane() {
@@ -141,19 +163,33 @@ BarWidget {
         root.switchToHerdr(root.getFirstActionablePane())
       } else {
         // Left click: toggle the summary popup panel
-        root.popupOpen = !root.popupOpen
+        root.togglePopup()
       }
     }
   }
 
   PopupCard {
     id: popup
-    anchorItem: button
+    anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
+    onOpenChanged: {
+      if (!open && root.popupOpen) {
+        root.popupOpen = false
+      }
+    }
     contentWidth: popup.fittedContentWidth(Style.space(380))
     contentHeight: popup.fittedContentHeight(panelContent.implicitHeight)
+
+    FocusScope {
+      anchors.fill: parent
+      focus: root.popupOpen
+      Keys.onEscapePressed: function(event) {
+        root.close()
+        event.accepted = true
+      }
+    }
 
     Column {
       id: panelContent
@@ -216,7 +252,7 @@ BarWidget {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.popupOpen = false
+            onClicked: root.close()
           }
         }
       }
