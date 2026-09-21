@@ -22,6 +22,28 @@ BarWidget {
   property string statusColorRole: "muted"
   property bool popupOpen: false
   property int selectedIndex: 0
+  property int nowSeconds: Math.floor(Date.now() / 1000)
+
+  Timer {
+    id: durationTicker
+    interval: 1000
+    repeat: true
+    running: root.popupOpen
+    onTriggered: {
+      root.nowSeconds = Math.floor(Date.now() / 1000)
+    }
+  }
+
+  function formatDuration(seconds) {
+    var s = Math.max(0, Number(seconds) || 0)
+    if (s < 60) return s + "s"
+    var mins = Math.floor(s / 60)
+    var remSecs = s % 60
+    if (mins < 60) return mins + "m " + remSecs + "s"
+    var hours = Math.floor(mins / 60)
+    var remMins = mins % 60
+    return hours + "h " + remMins + "m"
+  }
 
   onAgentsChanged: {
     if (selectedIndex >= agents.length) {
@@ -533,7 +555,8 @@ BarWidget {
                     Text {
                       id: statusText
                       anchors.centerIn: parent
-                      text: modelData.status === "idle" ? "ready" : modelData.status
+                      readonly property int elapsed: modelData.state_changed_at ? Math.max(0, root.nowSeconds - modelData.state_changed_at) : 0
+                      text: (modelData.status === "idle" ? "ready" : modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
                       color: {
                         if (modelData.status === "blocked") return Color.urgent
                         if (modelData.status === "working") return Color.accent
@@ -541,6 +564,7 @@ BarWidget {
                         return Color.muted
                       }
                       font.pixelSize: Style.font.caption * 0.9
+                      font.bold: modelData.status === "blocked" || modelData.status === "done"
                     }
                   }
                 }

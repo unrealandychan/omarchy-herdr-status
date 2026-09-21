@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -21,6 +21,15 @@ pub struct AgentInfo {
     pub source: String,
     #[serde(default = "default_session")]
     pub session: String,
+    #[serde(default = "current_unix_timestamp")]
+    pub state_changed_at: u64,
+}
+
+pub fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn default_session() -> String {
@@ -236,6 +245,7 @@ fn discover_herdr_sessions(override_socket: Option<&str>) -> Vec<(String, PathBu
 }
 
 fn get_demo_agents() -> Vec<AgentInfo> {
+    let now = current_unix_timestamp();
     vec![
         AgentInfo {
             name: "pi".to_string(),
@@ -248,6 +258,7 @@ fn get_demo_agents() -> Vec<AgentInfo> {
             focused: false,
             source: "herdr".to_string(),
             session: "default".to_string(),
+            state_changed_at: now.saturating_sub(120),
         },
         AgentInfo {
             name: "codex".to_string(),
@@ -260,6 +271,7 @@ fn get_demo_agents() -> Vec<AgentInfo> {
             focused: false,
             source: "herdr".to_string(),
             session: "default".to_string(),
+            state_changed_at: now.saturating_sub(300),
         },
         AgentInfo {
             name: "claude".to_string(),
@@ -272,6 +284,7 @@ fn get_demo_agents() -> Vec<AgentInfo> {
             focused: false,
             source: "herdr".to_string(),
             session: "default".to_string(),
+            state_changed_at: now.saturating_sub(60),
         },
         AgentInfo {
             name: "pi".to_string(),
@@ -284,6 +297,7 @@ fn get_demo_agents() -> Vec<AgentInfo> {
             focused: true,
             source: "herdr".to_string(),
             session: "default".to_string(),
+            state_changed_at: now.saturating_sub(900),
         },
     ]
 }
@@ -320,6 +334,7 @@ fn detect_standalone_agents() -> Vec<AgentInfo> {
                         focused: false,
                         source: "system".to_string(),
                         session: "system".to_string(),
+                        state_changed_at: current_unix_timestamp(),
                     });
                 }
             }
@@ -373,6 +388,11 @@ fn fetch_agents_snapshot(
                 let focused = item["focused"].as_bool().unwrap_or(false);
 
                 if !pane_id.is_empty() {
+                    let state_changed_at = item
+                        .get("state_changed_at")
+                        .and_then(|t| t.as_u64())
+                        .unwrap_or_else(current_unix_timestamp);
+
                     agent_map.insert(
                         pane_id.clone(),
                         AgentInfo {
@@ -386,6 +406,7 @@ fn fetch_agents_snapshot(
                             focused,
                             source: "herdr".to_string(),
                             session: session_name.to_string(),
+                            state_changed_at,
                         },
                     );
                 }
@@ -423,6 +444,10 @@ pub fn process_event_json(
                 if let Some(agent) = agents_map.get_mut(pane_id) {
                     if agent.status != new_status {
                         agent.status = new_status.to_string();
+                        agent.state_changed_at = data
+                            .get("state_changed_at")
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or_else(current_unix_timestamp);
                         changed = true;
                     }
                 }
@@ -440,6 +465,10 @@ pub fn process_event_json(
                         }
                     } else if let Some(agent_name) = data["agent"].as_str() {
                         let workspace_id = data["workspace_id"].as_str().unwrap_or("");
+                        let ts = data
+                            .get("state_changed_at")
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or_else(current_unix_timestamp);
                         let entry = agents_map.entry(pane_id.to_string()).or_insert_with(|| AgentInfo {
                             name: agent_name.to_string(),
                             status: "working".to_string(),
@@ -451,6 +480,7 @@ pub fn process_event_json(
                             focused: false,
                             source: "herdr".to_string(),
                             session: "default".to_string(),
+                            state_changed_at: ts,
                         });
                         entry.name = agent_name.to_string();
                         changed = true;
@@ -471,7 +501,22 @@ pub fn process_event_json(
                         let tab_id = pane["tab_id"].as_str().unwrap_or("");
                         let focused = pane["focused"].as_bool().unwrap_or(false);
 
-                        let existing_session = agents_map.get(pane_id).map(|a| a.session.clone()).unwrap_or_else(|| "default".to_string());
+                        let existing_agent = agents_map.get(pane_id);
+                        let existing_session = existing_agent
+                            .map(|a| a.session.clone())
+                            .unwrap_or_else(|| "default".to_string());
+                        let state_changed_at = pane
+                            .get("state_changed_at")
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or_else(|| {
+                                if let Some(existing) = existing_agent {
+                                    if existing.status == status {
+                                        return existing.state_changed_at;
+                                    }
+                                }
+                                current_unix_timestamp()
+                            });
+
                         let info = AgentInfo {
                             name: name.to_string(),
                             status: status.to_string(),
@@ -483,6 +528,7 @@ pub fn process_event_json(
                             focused,
                             source: "herdr".to_string(),
                             session: existing_session,
+                            state_changed_at,
                         };
 
                         if agents_map.get(pane_id) != Some(&info) {
@@ -593,7 +639,14 @@ fn stream_events_loop(
         // Periodic ground-truth sync: query Herdr socket every 1500ms to eliminate any state mismatch
         if last_snapshot_sync.elapsed() >= Duration::from_millis(1500) {
             last_snapshot_sync = std::time::Instant::now();
-            if let Ok(fresh) = fetch_agents_snapshot(socket_path, session_name) {
+            if let Ok(mut fresh) = fetch_agents_snapshot(socket_path, session_name) {
+                for (pane_id, fresh_agent) in fresh.iter_mut() {
+                    if let Some(existing) = agents_map.get(pane_id) {
+                        if existing.status == fresh_agent.status {
+                            fresh_agent.state_changed_at = existing.state_changed_at;
+                        }
+                    }
+                }
                 if fresh != agents_map {
                     agents_map = fresh;
                     let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
@@ -694,6 +747,7 @@ mod tests {
             focused: false,
             source: "herdr".to_string(),
             session: "default".to_string(),
+            state_changed_at: 0,
         }
     }
 
@@ -854,20 +908,89 @@ mod tests {
         let changed = process_event_json(event_json, &mut map);
         assert!(changed, "Expected status change to be handled");
         assert_eq!(map["w1:p1"].status, "blocked");
+        assert!(map["w1:p1"].state_changed_at > 0);
 
-        // Transition back to working
+        // Transition back to working with explicit timestamp
         let event_json_working = r#"{
             "event": "pane_agent_status_changed",
             "data": {
                 "type": "pane_agent_status_changed",
                 "pane_id": "w1:p1",
                 "workspace_id": "w1",
-                "agent_status": "working"
+                "agent_status": "working",
+                "state_changed_at": 1720000000
             }
         }"#;
         let changed2 = process_event_json(event_json_working, &mut map);
         assert!(changed2);
         assert_eq!(map["w1:p1"].status, "working");
+        assert_eq!(map["w1:p1"].state_changed_at, 1720000000);
+
+        // Same status does not trigger update
+        let event_json_same = r#"{
+            "event": "pane_agent_status_changed",
+            "data": {
+                "type": "pane_agent_status_changed",
+                "pane_id": "w1:p1",
+                "workspace_id": "w1",
+                "agent_status": "working",
+                "state_changed_at": 1799999999
+            }
+        }"#;
+        let changed3 = process_event_json(event_json_same, &mut map);
+        assert!(!changed3);
+        assert_eq!(map["w1:p1"].state_changed_at, 1720000000);
+    }
+
+    #[test]
+    fn test_process_event_pane_updated() {
+        let mut map = HashMap::new();
+        let mut initial = make_agent("agent-1", "working", "w1:p1");
+        initial.state_changed_at = 1710000000;
+        map.insert("w1:p1".to_string(), initial);
+
+        // Update title/cwd only without changing status: state_changed_at should be preserved
+        let update_json = r#"{
+            "event": "pane_updated",
+            "data": {
+                "pane": {
+                    "pane_id": "w1:p1",
+                    "agent": "agent-1",
+                    "agent_status": "working",
+                    "cwd": "/home/arch/new-dir",
+                    "terminal_title": "new title",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": true
+                }
+            }
+        }"#;
+        let changed = process_event_json(update_json, &mut map);
+        assert!(changed);
+        assert_eq!(map["w1:p1"].cwd, "/home/arch/new-dir");
+        assert_eq!(map["w1:p1"].state_changed_at, 1710000000);
+
+        // Update status: state_changed_at should be refreshed
+        let status_change_json = r#"{
+            "event": "pane_updated",
+            "data": {
+                "pane": {
+                    "pane_id": "w1:p1",
+                    "agent": "agent-1",
+                    "agent_status": "done",
+                    "cwd": "/home/arch/new-dir",
+                    "terminal_title": "new title",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": true,
+                    "state_changed_at": 1725000000
+                }
+            }
+        }"#;
+        let changed2 = process_event_json(status_change_json, &mut map);
+        assert!(changed2);
+        assert_eq!(map["w1:p1"].status, "done");
+        assert_eq!(map["w1:p1"].state_changed_at, 1725000000);
     }
 
     #[test]
@@ -923,7 +1046,9 @@ mod tests {
 
     #[test]
     fn test_status_payload_roundtrip() {
-        let agents = vec![make_agent("pi", "blocked", "wG:p1")];
+        let mut agent = make_agent("pi", "blocked", "wG:p1");
+        agent.state_changed_at = 1712345678;
+        let agents = vec![agent];
         let summary = compute_summary(&agents, true);
         let payload = StatusPayload {
             connected: true,
@@ -938,5 +1063,27 @@ mod tests {
         assert_eq!(parsed["summary"]["blocked"], 1);
         assert_eq!(parsed["summary"]["primary_status"], "blocked");
         assert_eq!(parsed["agents"][0]["name"], "pi");
+        assert_eq!(parsed["agents"][0]["state_changed_at"], 1712345678);
+
+        let roundtrip: StatusPayload = serde_json::from_str(&serialized).expect("Deserialization failed");
+        assert_eq!(roundtrip.agents[0].state_changed_at, 1712345678);
+    }
+
+    #[test]
+    fn test_agent_info_deserialize_default_timestamp() {
+        let json = r#"{
+            "name": "pi",
+            "status": "working",
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "title": "pi",
+            "cwd": "/home/arch",
+            "focused": false,
+            "source": "herdr"
+        }"#;
+        let agent: AgentInfo = serde_json::from_str(json).expect("Deserialization failed");
+        assert_eq!(agent.session, "default");
+        assert!(agent.state_changed_at > 0);
     }
 }
