@@ -23,6 +23,43 @@ BarWidget {
   property bool popupOpen: false
   property int selectedIndex: 0
   property int nowSeconds: Math.floor(Date.now() / 1000)
+  property bool notificationsEnabled: setting("notificationsEnabled", true)
+  property string filterQuery: ""
+  property bool searchActive: false
+  property var previousAgentStatuses: ({})
+
+  readonly property var filteredAgents: {
+    if (!root.filterQuery || root.filterQuery.trim() === "") return root.agents
+    var q = root.filterQuery.trim().toLowerCase()
+    var out = []
+    for (var i = 0; i < root.agents.length; i++) {
+      var a = root.agents[i]
+      var hay = (a.name + " " + a.status + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
+      if (hay.indexOf(q) !== -1) {
+        out.push(a)
+      }
+    }
+    return out
+  }
+
+  function notifyAgentStatus(a) {
+    if (!root.notificationsEnabled) return
+    var glyph = a.status === "blocked" ? "󰅚" : "󰄬"
+    var urgency = a.status === "blocked" ? "critical" : "normal"
+    var headline = (a.status === "blocked" ? "Agent Needs Input: " : "Agent Completed: ") + a.name
+    var body = (a.title && a.title !== a.name ? (a.title + " · ") : "") + "Pane " + a.pane_id
+    var paneArg = a.pane_id || ""
+    var sessArg = a.session && a.session !== "default" ? a.session : ""
+    Quickshell.execDetached([
+      "omarchy-notification-send",
+      "--app-name", "Herdr",
+      "-g", glyph,
+      "-u", urgency,
+      headline,
+      body,
+      "--exec", "herdr-focus", paneArg, sessArg
+    ])
+  }
 
   Timer {
     id: durationTicker
@@ -46,9 +83,20 @@ BarWidget {
   }
 
   onAgentsChanged: {
-    if (selectedIndex >= agents.length) {
-      selectedIndex = Math.max(0, agents.length - 1)
+    if (selectedIndex >= filteredAgents.length) {
+      selectedIndex = Math.max(0, filteredAgents.length - 1)
     }
+
+    var nextStatuses = {}
+    for (var i = 0; i < agents.length; i++) {
+      var a = agents[i]
+      var prev = root.previousAgentStatuses[a.pane_id]
+      if (prev && prev === "working" && (a.status === "blocked" || a.status === "done")) {
+        root.notifyAgentStatus(a)
+      }
+      nextStatuses[a.pane_id] = a.status
+    }
+    root.previousAgentStatuses = nextStatuses
   }
 
   // Omarchy Shell panel contract: opened, open(), close(), toggle()
@@ -258,35 +306,39 @@ BarWidget {
         event.accepted = true
       }
       Keys.onDownPressed: function(event) {
-        if (root.selectedIndex < root.agents.length - 1) root.selectedIndex++
+        if (root.selectedIndex < root.filteredAgents.length - 1) root.selectedIndex++
         event.accepted = true
       }
       Keys.onReturnPressed: function(event) {
-        if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
-          var a = root.agents[root.selectedIndex]
+        if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
+          var a = root.filteredAgents[root.selectedIndex]
           root.switchToHerdr(a.pane_id, a.session)
         }
         event.accepted = true
       }
       Keys.onEnterPressed: function(event) {
-        if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
-          var a = root.agents[root.selectedIndex]
+        if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
+          var a = root.filteredAgents[root.selectedIndex]
           root.switchToHerdr(a.pane_id, a.session)
         }
         event.accepted = true
       }
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_J) {
-          if (root.selectedIndex < root.agents.length - 1) root.selectedIndex++
+          if (root.selectedIndex < root.filteredAgents.length - 1) root.selectedIndex++
           event.accepted = true
         } else if (event.key === Qt.Key_K) {
           if (root.selectedIndex > 0) root.selectedIndex--
           event.accepted = true
         } else if (event.key === Qt.Key_O) {
-          if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
-            var a = root.agents[root.selectedIndex]
+          if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
+            var a = root.filteredAgents[root.selectedIndex]
             root.switchToHerdr(a.pane_id, a.session)
           }
+          event.accepted = true
+        } else if (event.key === Qt.Key_Slash || event.key === Qt.Key_F) {
+          root.searchActive = true
+          filterInput.forceActiveFocus()
           event.accepted = true
         } else if (event.key === Qt.Key_R) {
           bridgeProc.running = false
@@ -434,6 +486,79 @@ BarWidget {
         }
       }
 
+      // ---------- 2.5 Quick Search & Filter Bar ----------
+      Rectangle {
+        width: parent.width
+        height: Style.space(32)
+        radius: Style.space(6)
+        color: Qt.rgba(1, 1, 1, 0.05)
+        border.color: filterInput.activeFocus ? Color.accent : Qt.rgba(1, 1, 1, 0.1)
+        border.width: 1
+
+        RowLayout {
+          anchors.fill: parent
+          anchors.leftMargin: Style.space(8)
+          anchors.rightMargin: Style.space(8)
+          spacing: Style.space(6)
+
+          Text {
+            text: "󰍉"
+            color: filterInput.activeFocus ? Color.accent : Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          TextInput {
+            id: filterInput
+            Layout.fillWidth: true
+            color: root.bar ? root.bar.foreground : Color.foreground
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            clip: true
+            text: root.filterQuery
+            onTextChanged: {
+              root.filterQuery = text
+              root.selectedIndex = 0
+            }
+            Keys.onEscapePressed: function(event) {
+              if (text !== "") {
+                text = ""
+                root.filterQuery = ""
+              } else {
+                root.searchActive = false
+              }
+              event.accepted = true
+            }
+
+            Text {
+              anchors.fill: parent
+              visible: !filterInput.text && !filterInput.activeFocus
+              text: "Filter agents (/ or f)..."
+              color: Qt.rgba(1, 1, 1, 0.3)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Text {
+            visible: filterInput.text !== ""
+            text: "󰅖"
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                filterInput.text = ""
+                root.filterQuery = ""
+              }
+            }
+          }
+        }
+      }
+
       // Divider line
       Rectangle {
         width: parent.width
@@ -457,8 +582,19 @@ BarWidget {
           bottomPadding: Style.space(8)
         }
 
+        Text {
+          visible: root.agents.length > 0 && root.filteredAgents.length === 0
+          text: "No agents matching \"" + root.filterQuery + "\"."
+          color: Color.muted
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          anchors.horizontalCenter: parent.horizontalCenter
+          topPadding: Style.space(8)
+          bottomPadding: Style.space(8)
+        }
+
         Repeater {
-          model: root.agents
+          model: root.filteredAgents
 
           Rectangle {
             id: agentCard
