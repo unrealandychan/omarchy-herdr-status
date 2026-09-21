@@ -19,6 +19,28 @@ pub struct AgentInfo {
     pub cwd: String,
     pub focused: bool,
     pub source: String,
+    #[serde(default = "default_session")]
+    pub session: String,
+}
+
+fn default_session() -> String {
+    "default".to_string()
+}
+
+pub fn sort_agents_by_priority(agents: &mut [AgentInfo]) {
+    agents.sort_by(|a, b| {
+        let rank = |status: &str| match status.trim().to_lowercase().as_str() {
+            "blocked" => 0,
+            "done" => 1,
+            "working" => 2,
+            "idle" => 3,
+            _ => 4,
+        };
+        rank(&a.status)
+            .cmp(&rank(&b.status))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.pane_id.cmp(&b.pane_id))
+    });
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +187,106 @@ fn locate_herdr_socket(override_path: Option<&str>) -> Option<PathBuf> {
     None
 }
 
-// Scans /proc for non-Herdr agents (e.g. claude, codex, opencode, gemini, pi)
+// Scans for Herdr sessions across default and named sockets
+fn discover_herdr_sessions(override_socket: Option<&str>) -> Vec<(String, PathBuf)> {
+    let mut sessions = Vec::new();
+
+    if let Some(sock) = locate_herdr_socket(override_socket) {
+        sessions.push(("default".to_string(), sock));
+        return sessions;
+    }
+
+    if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
+        let default_sock = PathBuf::from(&config_home).join("herdr/herdr.sock");
+        if default_sock.exists() {
+            sessions.push(("default".to_string(), default_sock));
+        }
+        let sessions_dir = PathBuf::from(&config_home).join("herdr/sessions");
+        if sessions_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(sessions_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let sock = entry.path().join("herdr.sock");
+                    if sock.exists() && name != "default" {
+                        sessions.push((name, sock));
+                    }
+                }
+            }
+        }
+    } else if let Ok(home) = env::var("HOME") {
+        let default_sock = PathBuf::from(&home).join(".config/herdr/herdr.sock");
+        if default_sock.exists() {
+            sessions.push(("default".to_string(), default_sock));
+        }
+        let sessions_dir = PathBuf::from(&home).join(".config/herdr/sessions");
+        if sessions_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(sessions_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let sock = entry.path().join("herdr.sock");
+                    if sock.exists() && name != "default" {
+                        sessions.push((name, sock));
+                    }
+                }
+            }
+        }
+    }
+
+    sessions
+}
+
+fn get_demo_agents() -> Vec<AgentInfo> {
+    vec![
+        AgentInfo {
+            name: "pi".to_string(),
+            status: "blocked".to_string(),
+            pane_id: "w1:p1".to_string(),
+            workspace_id: "w1".to_string(),
+            tab_id: "w1:t1".to_string(),
+            title: "Drop legacy migration confirmation".to_string(),
+            cwd: "~/projects/billing-api".to_string(),
+            focused: false,
+            source: "herdr".to_string(),
+            session: "default".to_string(),
+        },
+        AgentInfo {
+            name: "codex".to_string(),
+            status: "done".to_string(),
+            pane_id: "w1:p2".to_string(),
+            workspace_id: "w1".to_string(),
+            tab_id: "w1:t1".to_string(),
+            title: "Upgrade search index algorithm".to_string(),
+            cwd: "~/projects/docs-site".to_string(),
+            focused: false,
+            source: "herdr".to_string(),
+            session: "default".to_string(),
+        },
+        AgentInfo {
+            name: "claude".to_string(),
+            status: "working".to_string(),
+            pane_id: "w2:p1".to_string(),
+            workspace_id: "w2".to_string(),
+            tab_id: "w2:t1".to_string(),
+            title: "Rewrite checkout receipt formatting pipeline".to_string(),
+            cwd: "~/projects/checkout-service".to_string(),
+            focused: false,
+            source: "herdr".to_string(),
+            session: "default".to_string(),
+        },
+        AgentInfo {
+            name: "pi".to_string(),
+            status: "idle".to_string(),
+            pane_id: "w2:p2".to_string(),
+            workspace_id: "w2".to_string(),
+            tab_id: "w2:t2".to_string(),
+            title: "Token names for design palette".to_string(),
+            cwd: "~/projects/design-tokens".to_string(),
+            focused: true,
+            source: "herdr".to_string(),
+            session: "default".to_string(),
+        },
+    ]
+}
 fn detect_standalone_agents() -> Vec<AgentInfo> {
     let known_agents: HashSet<&'static str> =
         ["claude", "codex", "opencode", "gemini", "pi"].into_iter().collect();
@@ -198,6 +319,7 @@ fn detect_standalone_agents() -> Vec<AgentInfo> {
                         cwd,
                         focused: false,
                         source: "system".to_string(),
+                        session: "system".to_string(),
                     });
                 }
             }
@@ -207,14 +329,18 @@ fn detect_standalone_agents() -> Vec<AgentInfo> {
     detected
 }
 
-fn emit_payload(payload: &StatusPayload) {
+fn emit_payload(payload: &mut StatusPayload) {
+    sort_agents_by_priority(&mut payload.agents);
     if let Ok(serialized) = serde_json::to_string(payload) {
         println!("{}", serialized);
         let _ = std::io::stdout().flush();
     }
 }
 
-fn fetch_agents_snapshot(socket_path: &Path) -> Result<HashMap<String, AgentInfo>, Box<dyn std::error::Error>> {
+fn fetch_agents_snapshot(
+    socket_path: &Path,
+    session_name: &str,
+) -> Result<HashMap<String, AgentInfo>, Box<dyn std::error::Error>> {
     let mut stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(Duration::from_millis(1500)))?;
 
@@ -259,6 +385,7 @@ fn fetch_agents_snapshot(socket_path: &Path) -> Result<HashMap<String, AgentInfo
                             cwd,
                             focused,
                             source: "herdr".to_string(),
+                            session: session_name.to_string(),
                         },
                     );
                 }
@@ -323,6 +450,7 @@ pub fn process_event_json(
                             cwd: "~".to_string(),
                             focused: false,
                             source: "herdr".to_string(),
+                            session: "default".to_string(),
                         });
                         entry.name = agent_name.to_string();
                         changed = true;
@@ -343,6 +471,7 @@ pub fn process_event_json(
                         let tab_id = pane["tab_id"].as_str().unwrap_or("");
                         let focused = pane["focused"].as_bool().unwrap_or(false);
 
+                        let existing_session = agents_map.get(pane_id).map(|a| a.session.clone()).unwrap_or_else(|| "default".to_string());
                         let info = AgentInfo {
                             name: name.to_string(),
                             status: status.to_string(),
@@ -353,6 +482,7 @@ pub fn process_event_json(
                             cwd: cwd.to_string(),
                             focused,
                             source: "herdr".to_string(),
+                            session: existing_session,
                         };
 
                         if agents_map.get(pane_id) != Some(&info) {
@@ -382,13 +512,14 @@ pub fn process_event_json(
 
 fn stream_events_loop(
     socket_path: &Path,
+    session_name: &str,
     mut agents_map: HashMap<String, AgentInfo>,
     once_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Emit initial state
     let agents_list: Vec<AgentInfo> = agents_map.values().cloned().collect();
     let summary = compute_summary(&agents_list, true);
-    emit_payload(&StatusPayload {
+    emit_payload(&mut StatusPayload {
         connected: true,
         agents: agents_list,
         summary,
@@ -440,7 +571,7 @@ fn stream_events_loop(
                             list = detect_standalone_agents();
                         }
                         let summary = compute_summary(&list, true);
-                        emit_payload(&StatusPayload {
+                        emit_payload(&mut StatusPayload {
                             connected: true,
                             agents: list,
                             summary,
@@ -462,7 +593,7 @@ fn stream_events_loop(
         // Periodic ground-truth sync: query Herdr socket every 1500ms to eliminate any state mismatch
         if last_snapshot_sync.elapsed() >= Duration::from_millis(1500) {
             last_snapshot_sync = std::time::Instant::now();
-            if let Ok(fresh) = fetch_agents_snapshot(socket_path) {
+            if let Ok(fresh) = fetch_agents_snapshot(socket_path, session_name) {
                 if fresh != agents_map {
                     agents_map = fresh;
                     let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
@@ -470,7 +601,7 @@ fn stream_events_loop(
                         list = detect_standalone_agents();
                     }
                     let summary = compute_summary(&list, true);
-                    emit_payload(&StatusPayload {
+                    emit_payload(&mut StatusPayload {
                         connected: true,
                         agents: list,
                         summary,
@@ -484,16 +615,37 @@ fn stream_events_loop(
 fn main() {
     let args: Vec<String> = env::args().collect();
     let once_mode = args.iter().any(|a| a == "--once");
+    let demo_mode = args.iter().any(|a| a == "--demo");
     let override_socket = args
         .iter()
         .position(|a| a == "--socket")
         .and_then(|i| args.get(i + 1).map(|s| s.as_str()));
 
+    if demo_mode {
+        loop {
+            let demo_agents = get_demo_agents();
+            let summary = compute_summary(&demo_agents, true);
+            emit_payload(&mut StatusPayload {
+                connected: true,
+                agents: demo_agents,
+                summary,
+            });
+
+            if once_mode {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(3000));
+        }
+        return;
+    }
+
     loop {
-        if let Some(sock_path) = locate_herdr_socket(override_socket) {
-            match fetch_agents_snapshot(&sock_path) {
+        let sessions = discover_herdr_sessions(override_socket);
+        if !sessions.is_empty() {
+            let (session_name, sock_path) = &sessions[0];
+            match fetch_agents_snapshot(sock_path, session_name) {
                 Ok(initial_agents) => {
-                    if let Err(_e) = stream_events_loop(&sock_path, initial_agents, once_mode) {
+                    if let Err(_e) = stream_events_loop(sock_path, session_name, initial_agents, once_mode) {
                         // Connection dropped, retry after sleep
                     }
                 }
@@ -501,7 +653,7 @@ fn main() {
                     // Could not query socket, check standalone
                     let standalone = detect_standalone_agents();
                     let summary = compute_summary(&standalone, false);
-                    emit_payload(&StatusPayload {
+                    emit_payload(&mut StatusPayload {
                         connected: false,
                         agents: standalone,
                         summary,
@@ -511,7 +663,7 @@ fn main() {
         } else {
             let standalone = detect_standalone_agents();
             let summary = compute_summary(&standalone, false);
-            emit_payload(&StatusPayload {
+            emit_payload(&mut StatusPayload {
                 connected: false,
                 agents: standalone,
                 summary,
@@ -541,7 +693,35 @@ mod tests {
             cwd: "/home/arch".to_string(),
             focused: false,
             source: "herdr".to_string(),
+            session: "default".to_string(),
         }
+    }
+
+    #[test]
+    fn test_sort_agents_by_priority() {
+        let mut agents = vec![
+            make_agent("agent-idle", "idle", "w1:p1"),
+            make_agent("agent-blocked", "blocked", "w1:p2"),
+            make_agent("agent-working", "working", "w1:p3"),
+            make_agent("agent-done", "done", "w1:p4"),
+        ];
+        sort_agents_by_priority(&mut agents);
+        assert_eq!(agents[0].status, "blocked");
+        assert_eq!(agents[1].status, "done");
+        assert_eq!(agents[2].status, "working");
+        assert_eq!(agents[3].status, "idle");
+    }
+
+    #[test]
+    fn test_demo_agents() {
+        let demo = get_demo_agents();
+        assert_eq!(demo.len(), 4);
+        let summary = compute_summary(&demo, true);
+        assert_eq!(summary.primary_status, "blocked");
+        assert_eq!(summary.blocked, 1);
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.working, 1);
+        assert_eq!(summary.idle, 1);
     }
 
     #[test]

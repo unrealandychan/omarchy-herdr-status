@@ -1,6 +1,6 @@
 [package]
 name = "omarchy-herdr-status"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Eddie Chan <eddie.chan@connect.ust.hk>"]
 description = "Ultra-low-resource status bridge and Quickshell plugin for Herdr AI coding agents"

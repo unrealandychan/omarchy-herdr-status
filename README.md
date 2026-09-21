@@ -6,6 +6,8 @@
 ![Language: Rust](https://img.shields.io/badge/Language-Rust%20%2F%20QML-orange.svg)
 ![Platform: Linux / Omarchy](https://img.shields.io/badge/Platform-Linux%20%2F%20Omarchy-blue.svg)
 
+![Herdr Agent Status Preview](preview.png)
+
 ---
 
 ## Overview
@@ -34,17 +36,28 @@ Status bar widgets that invoke external CLI processes on a timer can cause conti
 
 ## Features
 
-- **Live Agent Status Visualization**:
-  - `󱑎 <N> working`: Active turns and tool execution.
-  - `󰅚 <N> blocked`: Urgent indicator when an agent is stopped at an approval or input prompt.
-  - `󰄬 <N> done`: Turn completed and ready for review.
-  - `󰌒 <N> ready`: Idle agents awaiting instructions.
-  - `󰚩 off`: Herdr offline or disconnected.
-- **Multi-Agent & Subagent Support**: Automatically aggregates and tracks all active agents across workspaces, tabs, and split panes.
+- **Priority Attention Queue**:
+  - Automatically sorts agents by urgency: `blocked` (needs human answer) > `done` (completed work) > `working` (busy) > `ready` (idle).
+  - Prominent visual attention: `blocked` rows washed in urgent red, `done` rows in soft green, while `working` and `ready` stay subdued.
+- **Keyboard-First Navigation**:
+  - Navigate the open summary card without the mouse:
+    - `↑` / `↓` or `k` / `j`: Move selection across agent cards.
+    - `Enter` or `o`: Focus and jump to the selected agent's terminal pane.
+    - `r`: Force instant status sync.
+    - `Escape`: Close panel.
+- **Multi-Session Herdr Discovery**:
+  - Automatically tracks both default and named Herdr sessions (`herdr.sock` and `sessions/*/herdr.sock`).
 - **Interactive Controls**:
-  - **Left-Click**: Toggles a rich summary popup card listing every live agent, their status badges, pane handles, and working directories. Clicking an individual agent row immediately focuses that agent!
-  - **Right-Click**: Instantly jumps to the Herdr terminal screen and brings the active window into focus.
-- **Detailed Hover Preview**: Hovering over the widget displays a clean, multi-line status breakdown without opening the full panel.
+  - **Left-Click**: Toggles the interactive summary panel with live agent cards, working directories, and jump actions.
+  - **Right-Click**: Instantly focuses the most urgent agent pane and switches to the active terminal window.
+- **Demo Mode**:
+  - Run `herdr-status-bridge --demo` for testing or screenshots without leaking real file paths or sensitive tokens.
+- **Live Status Badges**:
+  - `󰅚 <N> blocked`: Urgent indicator when an agent is waiting on approval/input.
+  - `󰄬 <N> done`: Turn finished while looking elsewhere.
+  - `󱑎 <N> working`: Turn active and tools executing.
+  - `󰌒 <N> ready`: Agent resting and ready for prompt.
+  - `󰚩 off`: Herdr daemon offline.
 
 ---
 

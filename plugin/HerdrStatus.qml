@@ -21,6 +21,13 @@ BarWidget {
   property string badgeIcon: "󰚩"
   property string statusColorRole: "muted"
   property bool popupOpen: false
+  property int selectedIndex: 0
+
+  onAgentsChanged: {
+    if (selectedIndex >= agents.length) {
+      selectedIndex = Math.max(0, agents.length - 1)
+    }
+  }
 
   // Omarchy Shell panel contract: opened, open(), close(), toggle()
   readonly property bool opened: popupOpen
@@ -41,6 +48,7 @@ BarWidget {
   }
 
   function openPopup() {
+    root.selectedIndex = 0
     root.popupOpen = true
     if (root.bar && typeof root.bar.requestPopout === "function") {
       root.bar.requestPopout(root)
@@ -61,7 +69,12 @@ BarWidget {
 
   function triggerPress(button) {
     if (button === Qt.RightButton) {
-      root.switchToHerdr(root.getFirstActionablePane())
+      var act = root.getFirstActionableAgent()
+      if (act) {
+        root.switchToHerdr(act.pane_id, act.session)
+      } else {
+        root.switchToHerdr("", "")
+      }
     } else {
       root.togglePopup()
     }
@@ -129,25 +142,31 @@ BarWidget {
     }
   }
 
-  function switchToHerdr(targetPane) {
-    var paneArg = targetPane ? (" '" + targetPane + "'") : ""
+  function switchToHerdr(targetPane, session) {
+    var paneArg = targetPane ? (" '" + targetPane + "'") : " ''"
+    var sessArg = session && session !== "default" ? (" '" + session + "'") : ""
     if (root.bar) {
-      root.bar.run("herdr-focus" + paneArg)
+      root.bar.run("herdr-focus" + paneArg + sessArg)
     } else {
-      Quickshell.execDetached(["herdr-focus", targetPane || ""])
+      Quickshell.execDetached(["herdr-focus", targetPane || "", session || ""])
     }
     root.close()
   }
 
-  function getFirstActionablePane() {
+  function getFirstActionableAgent() {
     for (var i = 0; i < root.agents.length; i++) {
-      if (root.agents[i].status === "blocked") return root.agents[i].pane_id
+      if (root.agents[i].status === "blocked") return root.agents[i]
     }
     for (var j = 0; j < root.agents.length; j++) {
-      if (root.agents[j].status === "working") return root.agents[j].pane_id
+      if (root.agents[j].status === "working") return root.agents[j]
     }
-    if (root.agents.length > 0) return root.agents[0].pane_id
-    return ""
+    if (root.agents.length > 0) return root.agents[0]
+    return null
+  }
+
+  function getFirstActionablePane() {
+    var act = getFirstActionableAgent()
+    return act ? act.pane_id : ""
   }
 
   implicitWidth: button.implicitWidth
@@ -211,6 +230,47 @@ BarWidget {
       Keys.onEscapePressed: function(event) {
         root.close()
         event.accepted = true
+      }
+      Keys.onUpPressed: function(event) {
+        if (root.selectedIndex > 0) root.selectedIndex--
+        event.accepted = true
+      }
+      Keys.onDownPressed: function(event) {
+        if (root.selectedIndex < root.agents.length - 1) root.selectedIndex++
+        event.accepted = true
+      }
+      Keys.onReturnPressed: function(event) {
+        if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
+          var a = root.agents[root.selectedIndex]
+          root.switchToHerdr(a.pane_id, a.session)
+        }
+        event.accepted = true
+      }
+      Keys.onEnterPressed: function(event) {
+        if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
+          var a = root.agents[root.selectedIndex]
+          root.switchToHerdr(a.pane_id, a.session)
+        }
+        event.accepted = true
+      }
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_J) {
+          if (root.selectedIndex < root.agents.length - 1) root.selectedIndex++
+          event.accepted = true
+        } else if (event.key === Qt.Key_K) {
+          if (root.selectedIndex > 0) root.selectedIndex--
+          event.accepted = true
+        } else if (event.key === Qt.Key_O) {
+          if (root.agents.length > 0 && root.selectedIndex < root.agents.length) {
+            var a = root.agents[root.selectedIndex]
+            root.switchToHerdr(a.pane_id, a.session)
+          }
+          event.accepted = true
+        } else if (event.key === Qt.Key_R) {
+          bridgeProc.running = false
+          bridgeProc.running = true
+          event.accepted = true
+        }
       }
     }
 
@@ -381,21 +441,40 @@ BarWidget {
           Rectangle {
             id: agentCard
             required property var modelData
+            required property int index
+            readonly property bool isSelected: root.selectedIndex === index
             width: parent.width
             implicitHeight: agentRow.implicitHeight + Style.space(14)
             radius: Style.space(8)
-            color: agentMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(1, 1, 1, 0.03)
-            border.color: modelData.status === "blocked"
-              ? Color.urgent
-              : (modelData.status === "working" ? Color.accent : Qt.rgba(1, 1, 1, 0.1))
-            border.width: 1
+            color: {
+              if (isSelected) {
+                if (modelData.status === "blocked") return Qt.rgba(1.0, 0.25, 0.25, 0.22)
+                if (modelData.status === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.20)
+                if (modelData.status === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.16)
+                return Qt.rgba(1, 1, 1, 0.12)
+              }
+              if (agentMouse.containsMouse) return Qt.rgba(1, 1, 1, 0.08)
+              if (modelData.status === "blocked") return Qt.rgba(1.0, 0.25, 0.25, 0.12)
+              if (modelData.status === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.08)
+              if (modelData.status === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.05)
+              return Qt.rgba(1, 1, 1, 0.03)
+            }
+            border.color: {
+              if (isSelected) return Color.accent
+              if (modelData.status === "blocked") return Color.urgent
+              if (modelData.status === "done") return "#a6e3a1"
+              if (modelData.status === "working") return Color.accent
+              return Qt.rgba(1, 1, 1, 0.1)
+            }
+            border.width: isSelected ? 2 : 1
 
             MouseArea {
               id: agentMouse
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.switchToHerdr(modelData.pane_id)
+              onEntered: root.selectedIndex = index
+              onClicked: root.switchToHerdr(modelData.pane_id, modelData.session)
             }
 
             RowLayout {
@@ -454,7 +533,7 @@ BarWidget {
                     Text {
                       id: statusText
                       anchors.centerIn: parent
-                      text: modelData.status
+                      text: modelData.status === "idle" ? "ready" : modelData.status
                       color: {
                         if (modelData.status === "blocked") return Color.urgent
                         if (modelData.status === "working") return Color.accent
@@ -467,7 +546,7 @@ BarWidget {
                 }
 
                 Text {
-                  text: (modelData.pane_id ? ("Pane " + modelData.pane_id + " · ") : "") + (modelData.cwd || "~")
+                  text: (modelData.session && modelData.session !== "default" ? ("[" + modelData.session + "] ") : "") + (modelData.pane_id ? ("Pane " + modelData.pane_id + " · ") : "") + (modelData.title && modelData.title !== modelData.name ? (modelData.title + " · ") : "") + (modelData.cwd || "~")
                   color: Color.muted
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
@@ -528,7 +607,14 @@ BarWidget {
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor
-          onClicked: root.switchToHerdr(root.getFirstActionablePane())
+          onClicked: {
+            var act = root.getFirstActionableAgent()
+            if (act) {
+              root.switchToHerdr(act.pane_id, act.session)
+            } else {
+              root.switchToHerdr("", "")
+            }
+          }
         }
       }
     }
