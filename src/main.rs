@@ -345,11 +345,23 @@ fn detect_standalone_agents() -> Vec<AgentInfo> {
 }
 
 fn emit_payload(payload: &mut StatusPayload) {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    if !emit_payload_to(payload, &mut handle) {
+        // Downstream reader (e.g. Quickshell) closed the pipe or stdout is unwritable.
+        // Exit cleanly instead of panicking on BrokenPipe with SIGABRT.
+        std::process::exit(0);
+    }
+}
+
+pub fn emit_payload_to<W: Write>(payload: &mut StatusPayload, writer: &mut W) -> bool {
     sort_agents_by_priority(&mut payload.agents);
     if let Ok(serialized) = serde_json::to_string(payload) {
-        println!("{}", serialized);
-        let _ = std::io::stdout().flush();
+        if writeln!(writer, "{}", serialized).is_err() || writer.flush().is_err() {
+            return false;
+        }
     }
+    true
 }
 
 fn fetch_agents_snapshot(
@@ -1085,5 +1097,48 @@ mod tests {
         let agent: AgentInfo = serde_json::from_str(json).expect("Deserialization failed");
         assert_eq!(agent.session, "default");
         assert!(agent.state_changed_at > 0);
+    }
+
+    #[test]
+    fn test_emit_payload_to_success() {
+        let mut payload = StatusPayload {
+            connected: true,
+            agents: vec![make_agent("pi", "working", "w1:p1")],
+            summary: compute_summary(&[], true),
+        };
+        let mut buffer = Vec::new();
+        let ok = emit_payload_to(&mut payload, &mut buffer);
+        assert!(ok);
+        let output = String::from_utf8(buffer).expect("Valid utf8");
+        assert!(output.contains("\"name\":\"pi\""));
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_emit_payload_to_broken_pipe() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+        }
+
+        let mut payload = StatusPayload {
+            connected: true,
+            agents: vec![make_agent("pi", "working", "w1:p1")],
+            summary: compute_summary(&[], true),
+        };
+        let mut writer = FailingWriter;
+        let ok = emit_payload_to(&mut payload, &mut writer);
+        assert!(!ok);
     }
 }
