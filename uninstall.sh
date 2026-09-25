@@ -10,7 +10,17 @@ echo "==> Removing binaries..."
 rm -f "$BIN_DEST" "$FOCUS_DEST"
 
 echo "==> Removing plugin..."
-rm -rf "$PLUGIN_DEST"
+if [ -L "$PLUGIN_DEST" ]; then
+  rm -f "$PLUGIN_DEST"
+elif [ -d "$PLUGIN_DEST" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  DEST_REAL="$(cd "$PLUGIN_DEST" && pwd -P)"
+  if [ "$SCRIPT_DIR" = "$DEST_REAL" ]; then
+    echo "==> Running uninstaller from destination directory; leaving source files intact."
+  else
+    rm -rf "$PLUGIN_DEST"
+  fi
+fi
 
 if [ -f "$SHELL_CONFIG" ]; then
   echo "==> Removing arch.herdr-status from shell.json..."

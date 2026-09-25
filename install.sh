@@ -18,10 +18,60 @@ install -m 755 "$SCRIPT_DIR/target/release/herdr-status-bridge" "$BIN_DEST"
 echo "==> Installing herdr-focus helper to $HOME/.local/bin/herdr-focus..."
 install -m 755 "$SCRIPT_DIR/scripts/focus-herdr.sh" "$HOME/.local/bin/herdr-focus"
 
-echo "==> Linking Quickshell plugin to $PLUGIN_DEST..."
+echo "==> Setting up Quickshell plugin at $PLUGIN_DEST..."
 mkdir -p "$(dirname "$PLUGIN_DEST")"
-rm -rf "$PLUGIN_DEST"
-ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
+
+CANONICAL_SRC="$(cd "$PLUGIN_SRC" && pwd -P)"
+CURRENT_UID="$(id -u)"
+
+# Verify ownership of destination if it exists or is a symlink
+if [ -e "$PLUGIN_DEST" ] || [ -L "$PLUGIN_DEST" ]; then
+  DEST_UID="$(stat -c %u "$PLUGIN_DEST" 2>/dev/null || true)"
+  if [ -n "$DEST_UID" ] && [ "$DEST_UID" -ne "$CURRENT_UID" ]; then
+    echo "Error: $PLUGIN_DEST is owned by UID $DEST_UID, not current user UID $CURRENT_UID. Refusing to modify." >&2
+    exit 1
+  fi
+fi
+
+if [ -L "$PLUGIN_DEST" ]; then
+  CANONICAL_DEST="$(realpath "$PLUGIN_DEST" 2>/dev/null || true)"
+  if [ "$CANONICAL_DEST" = "$CANONICAL_SRC" ]; then
+    echo "==> Plugin symlink at $PLUGIN_DEST already points to $PLUGIN_SRC."
+  else
+    echo "==> Updating Quickshell plugin symlink at $PLUGIN_DEST..."
+    ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
+  fi
+elif [ -d "$PLUGIN_DEST" ]; then
+  CANONICAL_DEST="$(cd "$PLUGIN_DEST" && pwd -P)"
+  if [ "$CANONICAL_DEST" = "$CANONICAL_SRC" ]; then
+    echo "==> Running from destination directory ($PLUGIN_DEST); preserving source."
+  else
+    BACKUP_BASE="${PLUGIN_DEST}.bak.$(date +%s)"
+    BACKUP="$BACKUP_BASE"
+    n=1
+    while [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; do
+      BACKUP="${BACKUP_BASE}-${n}"
+      n=$((n + 1))
+    done
+    echo "==> Preserving existing plugin checkout: moving $PLUGIN_DEST to $BACKUP..."
+    mv "$PLUGIN_DEST" "$BACKUP"
+    ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
+  fi
+elif [ -e "$PLUGIN_DEST" ]; then
+  BACKUP_BASE="${PLUGIN_DEST}.bak.$(date +%s)"
+  BACKUP="$BACKUP_BASE"
+  n=1
+  while [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; do
+    BACKUP="${BACKUP_BASE}-${n}"
+    n=$((n + 1))
+  done
+  echo "==> Preserving existing file at $PLUGIN_DEST: moving to $BACKUP..."
+  mv "$PLUGIN_DEST" "$BACKUP"
+  ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
+else
+  echo "==> Linking Quickshell plugin to $PLUGIN_DEST..."
+  ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
+fi
 
 if [ -f "$SHELL_CONFIG" ]; then
   if grep -q "arch.herdr-status" "$SHELL_CONFIG"; then
