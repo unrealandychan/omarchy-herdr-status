@@ -9,7 +9,7 @@ SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
 
 echo "==> Building Rust release binary..."
 cd "$SCRIPT_DIR"
-cargo build --release
+cargo build --locked --release
 
 echo "==> Installing binary to $BIN_DEST..."
 mkdir -p "$HOME/.local/bin"
