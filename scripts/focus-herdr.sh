@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-plugin-id: arch.herdr-status
 set -euo pipefail
 
 TARGET_PANE="${1:-}"
