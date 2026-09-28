@@ -122,7 +122,7 @@ Or manually remove the installed artifacts:
 rm -f ~/.local/bin/herdr-status-bridge ~/.local/bin/herdr-focus
 
 # 2. Remove Quickshell plugin link
-rm -rf ~/.config/omarchy/plugins/arch.herdr-status
+rm -f ~/.config/omarchy/plugins/arch.herdr-status
 
 # 3. Remove "arch.herdr-status" from ~/.config/omarchy/shell.json and rescan
 omarchy-shell shell rescanPlugins
