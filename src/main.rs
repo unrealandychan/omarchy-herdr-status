@@ -34,7 +34,8 @@ pub fn read_bounded_line<R: BufRead>(
     limit: usize,
 ) -> std::io::Result<usize> {
     buf.clear();
-    let mut total = 0;
+    let mut raw_bytes: Vec<u8> = Vec::new();
+
     loop {
         let available = match reader.fill_buf() {
             Ok(b) => b,
@@ -50,9 +51,8 @@ pub fn read_bounded_line<R: BufRead>(
             None => available.len(),
         };
 
-        if total + to_take > limit {
-            let to_consume = to_take;
-            reader.consume(to_consume);
+        if raw_bytes.len() + to_take > limit {
+            reader.consume(to_take);
             if newline_pos.is_none() {
                 loop {
                     let av = match reader.fill_buf() {
@@ -71,24 +71,26 @@ pub fn read_bounded_line<R: BufRead>(
                     reader.consume(len);
                 }
             }
-            buf.clear();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "input line exceeded maximum allowed length",
             ));
         }
 
-        let chunk = std::str::from_utf8(&available[..to_take])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        buf.push_str(chunk);
-        total += to_take;
+        raw_bytes.extend_from_slice(&available[..to_take]);
         reader.consume(to_take);
 
         if newline_pos.is_some() {
             break;
         }
     }
-    Ok(total)
+
+    if raw_bytes.is_empty() {
+        return Ok(0);
+    }
+
+    *buf = String::from_utf8_lossy(&raw_bytes).into_owned();
+    Ok(raw_bytes.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -586,14 +588,15 @@ pub fn process_event_json(
     match event {
         "pane_agent_status_changed" => {
             let data = v.get("data").unwrap_or(&v);
-            let pane_id = data.get("pane_id").and_then(|p| p.as_str()).unwrap_or("");
+            let raw_pane_id = data.get("pane_id").and_then(|p| p.as_str()).unwrap_or("");
             let new_status = data
                 .get("agent_status")
                 .and_then(|s| s.as_str())
                 .unwrap_or("");
 
-            if !pane_id.is_empty() && !new_status.is_empty() {
-                if let Some(agent) = agents_map.get_mut(pane_id) {
+            if !raw_pane_id.is_empty() && !new_status.is_empty() {
+                let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
+                if let Some(agent) = agents_map.get_mut(&pane_key) {
                     let sanitized_status = sanitize_field(new_status, MAX_STATUS_LEN);
                     if agent.status != sanitized_status {
                         agent.status = sanitized_status;
@@ -608,12 +611,13 @@ pub fn process_event_json(
         }
         "pane_agent_detected" => {
             if let Some(data) = v.get("data") {
-                let pane_id = data["pane_id"].as_str().unwrap_or("");
+                let raw_pane_id = data["pane_id"].as_str().unwrap_or("");
                 let released = data["released"].as_bool().unwrap_or(false);
 
-                if !pane_id.is_empty() {
+                if !raw_pane_id.is_empty() {
+                    let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
                     if released {
-                        if agents_map.remove(pane_id).is_some() {
+                        if agents_map.remove(&pane_key).is_some() {
                             changed = true;
                         }
                     } else if let Some(agent_name) = data["agent"].as_str() {
@@ -622,11 +626,11 @@ pub fn process_event_json(
                             .get("state_changed_at")
                             .and_then(|t| t.as_u64())
                             .unwrap_or_else(current_unix_timestamp);
-                        if agents_map.contains_key(pane_id) || agents_map.len() < MAX_AGENTS_COUNT {
+                        if agents_map.contains_key(&pane_key) || agents_map.len() < MAX_AGENTS_COUNT {
                             let info = AgentInfo::new_sanitized(
                                 agent_name,
                                 "working",
-                                pane_id,
+                                &pane_key,
                                 workspace_id,
                                 "",
                                 agent_name,
@@ -636,7 +640,7 @@ pub fn process_event_json(
                                 "default",
                                 ts,
                             );
-                            agents_map.insert(info.pane_id.clone(), info);
+                            agents_map.insert(pane_key, info);
                             changed = true;
                         }
                     }
@@ -645,8 +649,9 @@ pub fn process_event_json(
         }
         "pane_updated" => {
             if let Some(pane) = v.get("data").and_then(|d| d.get("pane")) {
-                let pane_id = pane["pane_id"].as_str().unwrap_or("");
-                if !pane_id.is_empty() {
+                let raw_pane_id = pane["pane_id"].as_str().unwrap_or("");
+                if !raw_pane_id.is_empty() {
+                    let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
                     let agent_name = pane.get("agent").and_then(|a| a.as_str());
                     if let Some(name) = agent_name {
                         let status = pane["agent_status"].as_str().unwrap_or("unknown");
@@ -656,7 +661,7 @@ pub fn process_event_json(
                         let tab_id = pane["tab_id"].as_str().unwrap_or("");
                         let focused = pane["focused"].as_bool().unwrap_or(false);
 
-                        let existing_agent = agents_map.get(pane_id);
+                        let existing_agent = agents_map.get(&pane_key);
                         let existing_session = existing_agent
                             .map(|a| a.session.as_str())
                             .unwrap_or("default");
@@ -675,7 +680,7 @@ pub fn process_event_json(
                         let info = AgentInfo::new_sanitized(
                             name,
                             status,
-                            pane_id,
+                            &pane_key,
                             workspace_id,
                             tab_id,
                             title,
@@ -686,8 +691,8 @@ pub fn process_event_json(
                             state_changed_at,
                         );
 
-                        if agents_map.get(pane_id) != Some(&info) && (agents_map.contains_key(pane_id) || agents_map.len() < MAX_AGENTS_COUNT) {
-                            agents_map.insert(pane_id.to_string(), info);
+                        if agents_map.get(&pane_key) != Some(&info) && (agents_map.contains_key(&pane_key) || agents_map.len() < MAX_AGENTS_COUNT) {
+                            agents_map.insert(pane_key, info);
                             changed = true;
                         }
                     }
@@ -695,12 +700,13 @@ pub fn process_event_json(
             }
         }
         "pane_closed" | "pane_exited" => {
-            if let Some(pane_id) = v
+            if let Some(raw_pane_id) = v
                 .get("data")
                 .and_then(|d| d.get("pane_id"))
                 .and_then(|p| p.as_str())
             {
-                if agents_map.remove(pane_id).is_some() {
+                let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
+                if agents_map.remove(&pane_key).is_some() {
                     changed = true;
                 }
             }
@@ -1318,6 +1324,87 @@ mod tests {
         let res = read_bounded_line(&mut cursor, &mut line, 50);
         assert!(res.is_err());
         assert!(line.is_empty());
+    }
+
+    #[test]
+    fn test_read_bounded_line_multibyte_utf8_split_chunks() {
+        // 4-byte emoji 🦀 is [0xF0, 0x9F, 0xA6, 0x80]
+        struct ChunkedReader {
+            chunks: Vec<Vec<u8>>,
+            index: usize,
+        }
+        impl std::io::Read for ChunkedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.index >= self.chunks.len() {
+                    return Ok(0);
+                }
+                let chunk = &self.chunks[self.index];
+                let len = chunk.len().min(buf.len());
+                buf[..len].copy_from_slice(&chunk[..len]);
+                self.index += 1;
+                Ok(len)
+            }
+        }
+        impl BufRead for ChunkedReader {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                if self.index >= self.chunks.len() {
+                    return Ok(&[]);
+                }
+                Ok(&self.chunks[self.index])
+            }
+            fn consume(&mut self, _amt: usize) {
+                self.index += 1;
+            }
+        }
+
+        let mut reader = ChunkedReader {
+            chunks: vec![
+                vec![0xF0, 0x9F],       // Split midway through 🦀
+                vec![0xA6, 0x80, b'\n'], // Rest of 🦀 and newline
+            ],
+            index: 0,
+        };
+
+        let mut line = String::new();
+        let bytes = read_bounded_line(&mut reader, &mut line, 100).expect("decode ok");
+        assert_eq!(bytes, 5);
+        assert_eq!(line, "🦀\n");
+    }
+
+    #[test]
+    fn test_consistent_bounded_pane_id_keys() {
+        let mut map = HashMap::new();
+        let long_pane_id = "x".repeat(200);
+        let event = json!({
+            "event": "pane_updated",
+            "data": {
+                "pane": {
+                    "pane_id": long_pane_id,
+                    "agent": "long_agent",
+                    "agent_status": "working",
+                    "cwd": "/home/arch",
+                    "terminal_title": "title"
+                }
+            }
+        });
+
+        let changed = process_event_json(&event.to_string(), &mut map);
+        assert!(changed);
+        let expected_key = sanitize_field(&long_pane_id, MAX_ID_LEN);
+        assert_eq!(expected_key.len(), MAX_ID_LEN);
+        assert!(map.contains_key(&expected_key));
+        assert_eq!(map[&expected_key].pane_id, expected_key);
+
+        // Verify pane_closed removes it with the same long raw pane_id
+        let close_event = json!({
+            "event": "pane_closed",
+            "data": {
+                "pane_id": long_pane_id
+            }
+        });
+        let closed = process_event_json(&close_event.to_string(), &mut map);
+        assert!(closed);
+        assert!(!map.contains_key(&expected_key));
     }
 
     #[test]
