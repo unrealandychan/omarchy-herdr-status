@@ -84,6 +84,7 @@ if [ -L "$STATE_DIR" ]; then
   exit 1
 fi
 mkdir -m 700 -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
 if [ ! -d "$STATE_DIR" ] || [ -L "$STATE_DIR" ]; then
   echo "Error: $STATE_DIR is not a directory. Refusing to write receipt." >&2
   exit 1
