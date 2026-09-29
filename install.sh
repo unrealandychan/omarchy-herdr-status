@@ -79,12 +79,28 @@ else
 fi
 
 echo "==> Recording installation receipt..."
-mkdir -p "$STATE_DIR"
-check_ownership "$RECEIPT_FILE"
+if [ -L "$STATE_DIR" ]; then
+  echo "Error: $STATE_DIR is a symlink. Refusing to write receipt." >&2
+  exit 1
+fi
+mkdir -m 700 -p "$STATE_DIR"
+if [ ! -d "$STATE_DIR" ] || [ -L "$STATE_DIR" ]; then
+  echo "Error: $STATE_DIR is not a directory. Refusing to write receipt." >&2
+  exit 1
+fi
+check_ownership "$STATE_DIR"
+
+if [ -L "$RECEIPT_FILE" ]; then
+  rm -f "$RECEIPT_FILE"
+fi
+
 BIN_HASH="$(sha256sum "$BIN_DEST" | awk '{print $1}')"
 FOCUS_HASH="$(sha256sum "$FOCUS_DEST" | awk '{print $1}')"
 
-RECEIPT_FILE="$RECEIPT_FILE" CANONICAL_SRC="$CANONICAL_SRC" BIN_DEST="$BIN_DEST" BIN_HASH="$BIN_HASH" FOCUS_DEST="$FOCUS_DEST" FOCUS_HASH="$FOCUS_HASH" python3 -c "
+TEMP_RECEIPT="$(mktemp -p "$STATE_DIR" receipt.XXXXXX)"
+chmod 600 "$TEMP_RECEIPT"
+
+TEMP_RECEIPT="$TEMP_RECEIPT" CANONICAL_SRC="$CANONICAL_SRC" BIN_DEST="$BIN_DEST" BIN_HASH="$BIN_HASH" FOCUS_DEST="$FOCUS_DEST" FOCUS_HASH="$FOCUS_HASH" python3 -c "
 import json, os
 receipt = {
     'plugin_id': 'arch.herdr-status',
@@ -94,9 +110,11 @@ receipt = {
         os.environ['FOCUS_DEST']: os.environ['FOCUS_HASH']
     }
 }
-with open(os.environ['RECEIPT_FILE'], 'w') as f:
+with open(os.environ['TEMP_RECEIPT'], 'w') as f:
     json.dump(receipt, f, indent=2)
 "
+
+mv -f "$TEMP_RECEIPT" "$RECEIPT_FILE"
 
 echo "==> Setting up Quickshell plugin at $PLUGIN_DEST..."
 mkdir -p "$(dirname "$PLUGIN_DEST")"

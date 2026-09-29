@@ -54,12 +54,13 @@ is_owned_by_this_installation() {
   fi
 
   # Check install receipt recorded by this installation checkout
-  if [ -f "$RECEIPT_FILE" ]; then
+  if [ -f "$RECEIPT_FILE" ] && [ ! -L "$RECEIPT_FILE" ]; then
     local matches_receipt
     matches_receipt="$(RECEIPT_FILE="$RECEIPT_FILE" CANONICAL_SRC="$CANONICAL_SRC" SCRIPT_DIR="$SCRIPT_DIR" TARGET_FILE="$target" python3 -c "
 import json, os, sys, hashlib
 try:
-    with open(os.environ['RECEIPT_FILE'], 'r') as f:
+    fd = os.open(os.environ['RECEIPT_FILE'], os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(fd, 'r') as f:
         data = json.load(f)
     if data.get('plugin_id') != 'arch.herdr-status':
         sys.exit(1)
@@ -117,12 +118,17 @@ if [ -e "$FOCUS_DEST" ] || [ -L "$FOCUS_DEST" ]; then
 fi
 
 # Clean up installation receipt if it belonged to this installation
-if [ -f "$RECEIPT_FILE" ]; then
+if [ -L "$RECEIPT_FILE" ]; then
+  check_ownership "$RECEIPT_FILE"
+  echo "==> Removing receipt symlink..."
+  rm -f "$RECEIPT_FILE"
+elif [ -f "$RECEIPT_FILE" ]; then
   check_ownership "$RECEIPT_FILE"
   receipt_src="$(RECEIPT_FILE="$RECEIPT_FILE" python3 -c "
 import json, os
 try:
-    with open(os.environ['RECEIPT_FILE'], 'r') as f:
+    fd = os.open(os.environ['RECEIPT_FILE'], os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(fd, 'r') as f:
         data = json.load(f)
     print(data.get('source_dir', ''))
 except Exception:
