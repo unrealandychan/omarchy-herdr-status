@@ -8,6 +8,89 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub const MAX_SOCKET_LINE_BYTES: usize = 64 * 1024;
+pub const MAX_AGENTS_COUNT: usize = 256;
+pub const MAX_OUTPUT_LINE_BYTES: usize = 128 * 1024;
+pub const MAX_NAME_LEN: usize = 128;
+pub const MAX_TITLE_LEN: usize = 256;
+pub const MAX_STATUS_LEN: usize = 32;
+pub const MAX_ID_LEN: usize = 64;
+pub const MAX_CWD_LEN: usize = 256;
+pub const MAX_SESSION_LEN: usize = 128;
+
+pub fn sanitize_field(s: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().take(max_len) {
+        if !c.is_control() || c == ' ' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+pub fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut String,
+    limit: usize,
+) -> std::io::Result<usize> {
+    buf.clear();
+    let mut total = 0;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            break;
+        }
+        let newline_pos = available.iter().position(|&b| b == b'\n');
+        let to_take = match newline_pos {
+            Some(pos) => pos + 1,
+            None => available.len(),
+        };
+
+        if total + to_take > limit {
+            let to_consume = to_take;
+            reader.consume(to_consume);
+            if newline_pos.is_none() {
+                loop {
+                    let av = match reader.fill_buf() {
+                        Ok(b) => b,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Err(e),
+                    };
+                    if av.is_empty() {
+                        break;
+                    }
+                    if let Some(p) = av.iter().position(|&b| b == b'\n') {
+                        reader.consume(p + 1);
+                        break;
+                    }
+                    let len = av.len();
+                    reader.consume(len);
+                }
+            }
+            buf.clear();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "input line exceeded maximum allowed length",
+            ));
+        }
+
+        let chunk = std::str::from_utf8(&available[..to_take])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        buf.push_str(chunk);
+        total += to_take;
+        reader.consume(to_take);
+
+        if newline_pos.is_some() {
+            break;
+        }
+    }
+    Ok(total)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub name: String,
@@ -23,6 +106,36 @@ pub struct AgentInfo {
     pub session: String,
     #[serde(default = "current_unix_timestamp")]
     pub state_changed_at: u64,
+}
+
+impl AgentInfo {
+    pub fn new_sanitized(
+        name: &str,
+        status: &str,
+        pane_id: &str,
+        workspace_id: &str,
+        tab_id: &str,
+        title: &str,
+        cwd: &str,
+        focused: bool,
+        source: &str,
+        session: &str,
+        state_changed_at: u64,
+    ) -> Self {
+        Self {
+            name: sanitize_field(name, MAX_NAME_LEN),
+            status: sanitize_field(status, MAX_STATUS_LEN),
+            pane_id: sanitize_field(pane_id, MAX_ID_LEN),
+            workspace_id: sanitize_field(workspace_id, MAX_ID_LEN),
+            tab_id: sanitize_field(tab_id, MAX_ID_LEN),
+            title: sanitize_field(title, MAX_TITLE_LEN),
+            cwd: sanitize_field(cwd, MAX_CWD_LEN),
+            focused,
+            source: sanitize_field(source, MAX_NAME_LEN),
+            session: sanitize_field(session, MAX_SESSION_LEN),
+            state_changed_at,
+        }
+    }
 }
 
 pub fn current_unix_timestamp() -> u64 {
@@ -355,10 +468,37 @@ fn emit_payload(payload: &mut StatusPayload) {
 }
 
 pub fn emit_payload_to<W: Write>(payload: &mut StatusPayload, writer: &mut W) -> bool {
+    if payload.agents.len() > MAX_AGENTS_COUNT {
+        payload.agents.truncate(MAX_AGENTS_COUNT);
+    }
     sort_agents_by_priority(&mut payload.agents);
-    if let Ok(serialized) = serde_json::to_string(payload) {
-        if writeln!(writer, "{}", serialized).is_err() || writer.flush().is_err() {
-            return false;
+    if let Ok(mut serialized) = serde_json::to_string(payload) {
+        if serialized.len() > MAX_OUTPUT_LINE_BYTES {
+            while payload.agents.len() > 10 && serialized.len() > MAX_OUTPUT_LINE_BYTES {
+                payload.agents.truncate(payload.agents.len() / 2);
+                payload.summary = compute_summary(&payload.agents, payload.connected);
+                if let Ok(s) = serde_json::to_string(payload) {
+                    serialized = s;
+                } else {
+                    break;
+                }
+            }
+        }
+        if serialized.len() <= MAX_OUTPUT_LINE_BYTES {
+            if writeln!(writer, "{}", serialized).is_err() || writer.flush().is_err() {
+                return false;
+            }
+        } else {
+            let minimal = StatusPayload {
+                connected: payload.connected,
+                agents: Vec::new(),
+                summary: payload.summary.clone(),
+            };
+            if let Ok(min_ser) = serde_json::to_string(&minimal) {
+                if writeln!(writer, "{}", min_ser).is_err() || writer.flush().is_err() {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -1140,5 +1280,54 @@ mod tests {
         let mut writer = FailingWriter;
         let ok = emit_payload_to(&mut payload, &mut writer);
         assert!(!ok);
+    }
+
+    #[test]
+    fn test_sanitize_field() {
+        let long_str = "a".repeat(500);
+        let sanitized = sanitize_field(&long_str, 50);
+        assert_eq!(sanitized.len(), 50);
+
+        let with_ctrl = "hello\x00\x07world\n";
+        let cleaned = sanitize_field(with_ctrl, 50);
+        assert_eq!(cleaned, "helloworld");
+    }
+
+    #[test]
+    fn test_read_bounded_line_within_limit() {
+        let data = b"hello world\nnext line\n";
+        let mut cursor = std::io::Cursor::new(data);
+        let mut line = String::new();
+        let bytes = read_bounded_line(&mut cursor, &mut line, 100).expect("read ok");
+        assert_eq!(bytes, 12);
+        assert_eq!(line, "hello world\n");
+    }
+
+    #[test]
+    fn test_read_bounded_line_exceeds_limit() {
+        let long_data = format!("{}\n", "x".repeat(200));
+        let mut cursor = std::io::Cursor::new(long_data.as_bytes());
+        let mut line = String::new();
+        let res = read_bounded_line(&mut cursor, &mut line, 50);
+        assert!(res.is_err());
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn test_emit_payload_to_bounds_oversized() {
+        let mut many_agents = Vec::new();
+        for i in 0..500 {
+            many_agents.push(make_agent(&format!("agent_{}", i), "working", &format!("pane_{}", i)));
+        }
+        let mut payload = StatusPayload {
+            connected: true,
+            agents: many_agents,
+            summary: compute_summary(&[], true),
+        };
+        let mut buffer = Vec::new();
+        let ok = emit_payload_to(&mut payload, &mut buffer);
+        assert!(ok);
+        assert!(buffer.len() <= MAX_OUTPUT_LINE_BYTES);
+        assert!(payload.agents.len() <= MAX_AGENTS_COUNT);
     }
 }

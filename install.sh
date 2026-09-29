@@ -149,6 +149,11 @@ else
   ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
 fi
 
+if [ -L "$SHELL_CONFIG" ]; then
+  echo "Error: $SHELL_CONFIG is a symlink. Refusing to modify." >&2
+  exit 1
+fi
+
 if [ -f "$SHELL_CONFIG" ]; then
   check_ownership "$SHELL_CONFIG"
   if grep -q "arch.herdr-status" "$SHELL_CONFIG"; then
@@ -158,16 +163,36 @@ if [ -f "$SHELL_CONFIG" ]; then
     BACKUP="$(get_unused_backup_path "$SHELL_CONFIG")"
     echo "==> Backing up $SHELL_CONFIG to $BACKUP..."
     cp "$SHELL_CONFIG" "$BACKUP"
-    python3 -c "
-import json
-with open('$SHELL_CONFIG', 'r') as f:
+    SHELL_CONFIG="$SHELL_CONFIG" python3 -c "
+import json, os, tempfile, sys
+
+config_path = os.environ['SHELL_CONFIG']
+if os.path.islink(config_path) or not os.path.isfile(config_path):
+    sys.exit(1)
+
+with open(config_path, 'r', encoding='utf-8') as f:
     cfg = json.load(f)
 right = cfg.get('bar', {}).get('layout', {}).get('right', [])
 exists = any(w.get('id') == 'arch.herdr-status' for w in right)
 if not exists:
     right.insert(0, {'id': 'arch.herdr-status'})
-with open('$SHELL_CONFIG', 'w') as f:
-    json.dump(cfg, f, indent=2)
+
+config_dir = os.path.dirname(config_path)
+orig_mode = os.stat(config_path).st_mode & 0o777
+
+fd, tmp_path = tempfile.mkstemp(prefix='shell-', suffix='.tmp', dir=config_dir)
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=2)
+        f.write('\n')
+    os.chmod(tmp_path, orig_mode)
+    if os.path.islink(config_path):
+        os.unlink(config_path)
+    os.replace(tmp_path, config_path)
+except Exception:
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+    raise
 "
     echo "==> Updated shell.json successfully."
   fi

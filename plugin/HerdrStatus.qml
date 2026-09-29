@@ -213,12 +213,19 @@ BarWidget {
   }
 
   function switchToHerdr(targetPane, session) {
-    var paneArg = targetPane ? (" '" + targetPane + "'") : " ''"
-    var sessArg = session && session !== "default" ? (" '" + session + "'") : ""
-    if (root.bar) {
-      root.bar.run("herdr-focus" + paneArg + sessArg)
-    } else {
-      Quickshell.execDetached(["herdr-focus", targetPane || "", session || ""])
+    var p = targetPane ? String(targetPane) : ""
+    var s = (session && session !== "default") ? String(session) : ""
+    var args = ["herdr-focus"]
+    if (p !== "" || s !== "") {
+      args.push(p)
+      if (s !== "") {
+        args.push(s)
+      }
+    }
+    if (typeof Quickshell !== "undefined" && Quickshell.execDetached) {
+      Quickshell.execDetached(args)
+    } else if (root.bar && typeof root.bar.execDetached === "function") {
+      root.bar.execDetached(args)
     }
     root.close()
   }
@@ -670,6 +677,7 @@ BarWidget {
 
                   Text {
                     text: modelData.name
+                    textFormat: Text.PlainText
                     color: root.bar ? root.bar.foreground : Color.foreground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
@@ -691,6 +699,7 @@ BarWidget {
                     Text {
                       id: statusText
                       anchors.centerIn: parent
+                      textFormat: Text.PlainText
                       readonly property int elapsed: modelData.state_changed_at ? Math.max(0, root.nowSeconds - modelData.state_changed_at) : 0
                       text: (modelData.status === "idle" ? "ready" : modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
                       color: {
@@ -707,6 +716,7 @@ BarWidget {
 
                 Text {
                   text: (modelData.session && modelData.session !== "default" ? ("[" + modelData.session + "] ") : "") + (modelData.pane_id ? ("Pane " + modelData.pane_id + " · ") : "") + (modelData.title && modelData.title !== modelData.name ? (modelData.title + " · ") : "") + (modelData.cwd || "~")
+                  textFormat: Text.PlainText
                   color: Color.muted
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
