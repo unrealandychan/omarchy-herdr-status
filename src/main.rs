@@ -436,19 +436,22 @@ fn detect_standalone_agents() -> Vec<AgentInfo> {
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|_| "~".to_string());
 
-                    detected.push(AgentInfo {
-                        name: comm_trim.to_string(),
-                        status: "working".to_string(),
-                        pane_id: format!("pid:{}", pid),
-                        workspace_id: "system".to_string(),
-                        tab_id: "system".to_string(),
-                        title: format!("{} (system)", comm_trim),
-                        cwd,
-                        focused: false,
-                        source: "system".to_string(),
-                        session: "system".to_string(),
-                        state_changed_at: current_unix_timestamp(),
-                    });
+                    if detected.len() < MAX_AGENTS_COUNT {
+                        let info = AgentInfo::new_sanitized(
+                            comm_trim,
+                            "working",
+                            &format!("pid:{}", pid),
+                            "system",
+                            "system",
+                            &format!("{} (system)", comm_trim),
+                            &cwd,
+                            false,
+                            "system",
+                            "system",
+                            current_unix_timestamp(),
+                        );
+                        detected.push(info);
+                    }
                 }
             }
         }
@@ -520,23 +523,22 @@ fn fetch_agents_snapshot(
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    read_bounded_line(&mut reader, &mut line, MAX_SOCKET_LINE_BYTES)?;
 
     let mut agent_map = HashMap::new();
     if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
         if let Some(arr) = v.get("result").and_then(|r| r.get("agents")).and_then(|a| a.as_array()) {
-            for item in arr {
+            for item in arr.iter().take(MAX_AGENTS_COUNT) {
                 let name = item["agent"]
                     .as_str()
                     .or_else(|| item["terminal_title_stripped"].as_str())
-                    .unwrap_or("agent")
-                    .to_string();
-                let status = item["agent_status"].as_str().unwrap_or("unknown").to_string();
-                let pane_id = item["pane_id"].as_str().unwrap_or("").to_string();
-                let workspace_id = item["workspace_id"].as_str().unwrap_or("").to_string();
-                let tab_id = item["tab_id"].as_str().unwrap_or("").to_string();
-                let title = item["terminal_title"].as_str().unwrap_or(&name).to_string();
-                let cwd = item["cwd"].as_str().unwrap_or("~").to_string();
+                    .unwrap_or("agent");
+                let status = item["agent_status"].as_str().unwrap_or("unknown");
+                let pane_id = item["pane_id"].as_str().unwrap_or("");
+                let workspace_id = item["workspace_id"].as_str().unwrap_or("");
+                let tab_id = item["tab_id"].as_str().unwrap_or("");
+                let title = item["terminal_title"].as_str().unwrap_or(name);
+                let cwd = item["cwd"].as_str().unwrap_or("~");
                 let focused = item["focused"].as_bool().unwrap_or(false);
 
                 if !pane_id.is_empty() {
@@ -545,22 +547,20 @@ fn fetch_agents_snapshot(
                         .and_then(|t| t.as_u64())
                         .unwrap_or_else(current_unix_timestamp);
 
-                    agent_map.insert(
-                        pane_id.clone(),
-                        AgentInfo {
-                            name,
-                            status,
-                            pane_id,
-                            workspace_id,
-                            tab_id,
-                            title,
-                            cwd,
-                            focused,
-                            source: "herdr".to_string(),
-                            session: session_name.to_string(),
-                            state_changed_at,
-                        },
+                    let info = AgentInfo::new_sanitized(
+                        name,
+                        status,
+                        pane_id,
+                        workspace_id,
+                        tab_id,
+                        title,
+                        cwd,
+                        focused,
+                        "herdr",
+                        session_name,
+                        state_changed_at,
                     );
+                    agent_map.insert(info.pane_id.clone(), info);
                 }
             }
         }
@@ -594,8 +594,9 @@ pub fn process_event_json(
 
             if !pane_id.is_empty() && !new_status.is_empty() {
                 if let Some(agent) = agents_map.get_mut(pane_id) {
-                    if agent.status != new_status {
-                        agent.status = new_status.to_string();
+                    let sanitized_status = sanitize_field(new_status, MAX_STATUS_LEN);
+                    if agent.status != sanitized_status {
+                        agent.status = sanitized_status;
                         agent.state_changed_at = data
                             .get("state_changed_at")
                             .and_then(|t| t.as_u64())
@@ -621,21 +622,23 @@ pub fn process_event_json(
                             .get("state_changed_at")
                             .and_then(|t| t.as_u64())
                             .unwrap_or_else(current_unix_timestamp);
-                        let entry = agents_map.entry(pane_id.to_string()).or_insert_with(|| AgentInfo {
-                            name: agent_name.to_string(),
-                            status: "working".to_string(),
-                            pane_id: pane_id.to_string(),
-                            workspace_id: workspace_id.to_string(),
-                            tab_id: "".to_string(),
-                            title: agent_name.to_string(),
-                            cwd: "~".to_string(),
-                            focused: false,
-                            source: "herdr".to_string(),
-                            session: "default".to_string(),
-                            state_changed_at: ts,
-                        });
-                        entry.name = agent_name.to_string();
-                        changed = true;
+                        if agents_map.contains_key(pane_id) || agents_map.len() < MAX_AGENTS_COUNT {
+                            let info = AgentInfo::new_sanitized(
+                                agent_name,
+                                "working",
+                                pane_id,
+                                workspace_id,
+                                "",
+                                agent_name,
+                                "~",
+                                false,
+                                "herdr",
+                                "default",
+                                ts,
+                            );
+                            agents_map.insert(info.pane_id.clone(), info);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -655,8 +658,8 @@ pub fn process_event_json(
 
                         let existing_agent = agents_map.get(pane_id);
                         let existing_session = existing_agent
-                            .map(|a| a.session.clone())
-                            .unwrap_or_else(|| "default".to_string());
+                            .map(|a| a.session.as_str())
+                            .unwrap_or("default");
                         let state_changed_at = pane
                             .get("state_changed_at")
                             .and_then(|t| t.as_u64())
@@ -669,21 +672,21 @@ pub fn process_event_json(
                                 current_unix_timestamp()
                             });
 
-                        let info = AgentInfo {
-                            name: name.to_string(),
-                            status: status.to_string(),
-                            pane_id: pane_id.to_string(),
-                            workspace_id: workspace_id.to_string(),
-                            tab_id: tab_id.to_string(),
-                            title: title.to_string(),
-                            cwd: cwd.to_string(),
+                        let info = AgentInfo::new_sanitized(
+                            name,
+                            status,
+                            pane_id,
+                            workspace_id,
+                            tab_id,
+                            title,
+                            cwd,
                             focused,
-                            source: "herdr".to_string(),
-                            session: existing_session,
+                            "herdr",
+                            existing_session,
                             state_changed_at,
-                        };
+                        );
 
-                        if agents_map.get(pane_id) != Some(&info) {
+                        if agents_map.get(pane_id) != Some(&info) && (agents_map.contains_key(pane_id) || agents_map.len() < MAX_AGENTS_COUNT) {
                             agents_map.insert(pane_id.to_string(), info);
                             changed = true;
                         }
@@ -752,7 +755,7 @@ fn stream_events_loop(
 
     loop {
         line.clear();
-        let read_res = reader.read_line(&mut line);
+        let read_res = read_bounded_line(&mut reader, &mut line, MAX_SOCKET_LINE_BYTES);
 
         match read_res {
             Ok(0) => {
@@ -782,6 +785,10 @@ fn stream_events_loop(
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 // Timeout is normal; periodic sync below handles snapshot refresh
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                // Oversized line from socket was skipped
+                eprintln!("Warning: skipping oversized Herdr socket line: {}", e);
             }
             Err(e) => {
                 return Err(Box::new(e));

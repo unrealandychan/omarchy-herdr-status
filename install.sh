@@ -167,32 +167,55 @@ if [ -f "$SHELL_CONFIG" ]; then
 import json, os, tempfile, sys
 
 config_path = os.environ['SHELL_CONFIG']
-if os.path.islink(config_path) or not os.path.isfile(config_path):
-    sys.exit(1)
+dirname = os.path.dirname(config_path)
+basename = os.path.basename(config_path)
+current_uid = os.getuid()
 
-with open(config_path, 'r', encoding='utf-8') as f:
-    cfg = json.load(f)
-right = cfg.get('bar', {}).get('layout', {}).get('right', [])
-exists = any(w.get('id') == 'arch.herdr-status' for w in right)
-if not exists:
-    right.insert(0, {'id': 'arch.herdr-status'})
-
-config_dir = os.path.dirname(config_path)
-orig_mode = os.stat(config_path).st_mode & 0o777
-
-fd, tmp_path = tempfile.mkstemp(prefix='shell-', suffix='.tmp', dir=config_dir)
+dir_fd = os.open(dirname, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
 try:
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, indent=2)
-        f.write('\n')
-    os.chmod(tmp_path, orig_mode)
-    if os.path.islink(config_path):
-        os.unlink(config_path)
-    os.replace(tmp_path, config_path)
-except Exception:
-    if os.path.exists(tmp_path):
-        os.unlink(tmp_path)
-    raise
+    dir_stat = os.fstat(dir_fd)
+    if dir_stat.st_uid != current_uid:
+        raise PermissionError(f'Directory {dirname} is owned by UID {dir_stat.st_uid}, not {current_uid}')
+
+    fd = os.open(basename, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != current_uid:
+            raise PermissionError(f'File {basename} is owned by UID {st.st_uid}, not {current_uid}')
+        orig_mode = st.st_mode & 0o777
+        with os.fdopen(fd, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+    right = cfg.get('bar', {}).get('layout', {}).get('right', [])
+    exists = any(w.get('id') == 'arch.herdr-status' for w in right)
+    if not exists:
+        right.insert(0, {'id': 'arch.herdr-status'})
+
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=f'.{basename}-', suffix='.tmp', dir=dirname)
+    tmp_base = os.path.basename(tmp_path)
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, indent=2)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, orig_mode)
+        os.replace(tmp_base, basename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        tmp_path = None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+finally:
+    os.close(dir_fd)
 "
     echo "==> Updated shell.json successfully."
   fi
