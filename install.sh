@@ -126,7 +126,9 @@ if [ -L "$PLUGIN_DEST" ]; then
   if [ "$CANONICAL_DEST" = "$CANONICAL_SRC" ]; then
     echo "==> Plugin symlink at $PLUGIN_DEST already points to $PLUGIN_SRC."
   else
-    echo "==> Updating Quickshell plugin symlink at $PLUGIN_DEST..."
+    BACKUP="$(get_unused_backup_path "$PLUGIN_DEST")"
+    echo "==> Preserving existing plugin symlink: moving $PLUGIN_DEST to $BACKUP..."
+    mv "$PLUGIN_DEST" "$BACKUP"
     ln -sfn "$PLUGIN_SRC" "$PLUGIN_DEST"
   fi
 elif [ -d "$PLUGIN_DEST" ]; then

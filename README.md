@@ -108,23 +108,30 @@ The installer will:
 
 ## Removal & Uninstallation
 
-To completely remove Herdr Agent Status:
+The recommended way to completely remove Herdr Agent Status is using the uninstaller script, which verifies provenance against the installation receipt (`~/.local/state/omarchy/arch.herdr-status/install-receipt.json`) and source files before modifying or removing any file:
 
 ```bash
 chmod +x uninstall.sh
 ./uninstall.sh
 ```
 
-Or manually remove the installed artifacts:
+If removing artifacts manually, verify identity and provenance before deleting or unlinking paths to avoid disturbing other installations:
 
 ```bash
-# 1. Remove binaries
-rm -f ~/.local/bin/herdr-status-bridge ~/.local/bin/herdr-focus
+# 1. Verify and remove binaries (confirm provenance against install receipt or checkout source)
+# Check SHA-256 against receipt or compare directly to this checkout:
+cmp -s target/release/herdr-status-bridge ~/.local/bin/herdr-status-bridge && rm -f ~/.local/bin/herdr-status-bridge
+cmp -s scripts/focus-herdr.sh ~/.local/bin/herdr-focus && rm -f ~/.local/bin/herdr-focus
 
-# 2. Remove Quickshell plugin link
-rm -f ~/.config/omarchy/plugins/arch.herdr-status
+# 2. Verify Quickshell plugin symlink points to this checkout before unlinking
+if [ "$(realpath ~/.config/omarchy/plugins/arch.herdr-status 2>/dev/null)" = "$PWD" ]; then
+  rm -f ~/.config/omarchy/plugins/arch.herdr-status
+fi
 
-# 3. Remove "arch.herdr-status" from ~/.config/omarchy/shell.json and rescan
+# 3. Remove state directory and receipt if owned by this checkout
+rm -rf ~/.local/state/omarchy/arch.herdr-status
+
+# 4. Remove "arch.herdr-status" from ~/.config/omarchy/shell.json and rescan
 omarchy-shell shell rescanPlugins
 ```
 
