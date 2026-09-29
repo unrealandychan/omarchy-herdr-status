@@ -138,11 +138,14 @@ except Exception:
     echo "==> Removing installation receipt..."
     rm -f "$RECEIPT_FILE"
     rmdir "$STATE_DIR" 2>/dev/null || true
+    RECEIPT_OWNED=1
   fi
 fi
 
 # Verify ownership of destination if it exists or is a symlink
 check_ownership "$PLUGIN_DEST"
+
+THIS_INSTALLATION_OWNS_PLUGIN=0
 
 echo "==> Removing plugin..."
 if [ -L "$PLUGIN_DEST" ]; then
@@ -154,6 +157,7 @@ if [ -L "$PLUGIN_DEST" ]; then
      [ "$DEST_TARGET_CANONICAL" = "$SCRIPT_DIR" ] || [ "$DEST_TARGET_CANONICAL" = "$CANONICAL_SRC" ]; then
     echo "==> Removing plugin symlink at $PLUGIN_DEST..."
     rm -f "$PLUGIN_DEST"
+    THIS_INSTALLATION_OWNS_PLUGIN=1
   else
     echo "==> Plugin symlink at $PLUGIN_DEST points to $DEST_TARGET (not this checkout $SCRIPT_DIR); leaving intact."
   fi
@@ -161,26 +165,33 @@ elif [ -d "$PLUGIN_DEST" ]; then
   DEST_REAL="$(cd "$PLUGIN_DEST" && pwd -P)"
   if [ "$SCRIPT_DIR" = "$DEST_REAL" ] || [ "$CANONICAL_SRC" = "$DEST_REAL" ]; then
     echo "==> Running uninstaller from destination directory; leaving source files intact."
+    THIS_INSTALLATION_OWNS_PLUGIN=1
   else
     echo "==> Destination $PLUGIN_DEST is a directory (not a symlink created by this installer); leaving intact."
   fi
 elif [ -e "$PLUGIN_DEST" ]; then
   echo "==> Destination $PLUGIN_DEST is not a symlink created by this installer; leaving intact."
+else
+  # Destination does not exist: if this checkout owned the receipt, allow cleaning shell.json
+  if [ "${RECEIPT_OWNED:-0}" = "1" ]; then
+    THIS_INSTALLATION_OWNS_PLUGIN=1
+  fi
 fi
 
-if [ -L "$SHELL_CONFIG" ]; then
-  echo "Error: $SHELL_CONFIG is a symlink. Refusing to modify." >&2
-  exit 1
-fi
+if [ "$THIS_INSTALLATION_OWNS_PLUGIN" -eq 1 ]; then
+  if [ -L "$SHELL_CONFIG" ]; then
+    echo "Error: $SHELL_CONFIG is a symlink. Refusing to modify." >&2
+    exit 1
+  fi
 
-if [ -f "$SHELL_CONFIG" ]; then
-  check_ownership "$SHELL_CONFIG"
-  if grep -q "arch.herdr-status" "$SHELL_CONFIG"; then
-    echo "==> Removing arch.herdr-status from shell.json..."
-    BACKUP="$(get_unused_backup_path "$SHELL_CONFIG")"
-    echo "==> Backing up $SHELL_CONFIG to $BACKUP..."
-    cp "$SHELL_CONFIG" "$BACKUP"
-    SHELL_CONFIG="$SHELL_CONFIG" python3 -c "
+  if [ -f "$SHELL_CONFIG" ]; then
+    check_ownership "$SHELL_CONFIG"
+    if grep -q "arch.herdr-status" "$SHELL_CONFIG"; then
+      echo "==> Removing arch.herdr-status from shell.json..."
+      BACKUP="$(get_unused_backup_path "$SHELL_CONFIG")"
+      echo "==> Backing up $SHELL_CONFIG to $BACKUP..."
+      cp "$SHELL_CONFIG" "$BACKUP"
+      SHELL_CONFIG="$SHELL_CONFIG" python3 -c "
 import json, os, tempfile, sys
 
 config_path = os.environ['SHELL_CONFIG']
@@ -233,13 +244,16 @@ try:
 finally:
     os.close(dir_fd)
 "
-    echo "==> Updated shell.json successfully."
-  else
-    echo "==> arch.herdr-status not present in shell.json."
+      echo "==> Updated shell.json successfully."
+    else
+      echo "==> arch.herdr-status not present in shell.json."
+    fi
   fi
-fi
 
-echo "==> Triggering plugin rescan in Omarchy Shell..."
-omarchy-shell shell rescanPlugins 2>/dev/null || true
+  echo "==> Triggering plugin rescan in Omarchy Shell..."
+  omarchy-shell shell rescanPlugins 2>/dev/null || true
+else
+  echo "==> Active plugin at $PLUGIN_DEST is not owned by this checkout; leaving shell.json intact."
+fi
 
 echo "==> Uninstallation complete."
