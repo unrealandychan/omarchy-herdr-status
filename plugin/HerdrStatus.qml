@@ -480,15 +480,17 @@ BarWidget {
 
         // Working Pill
         Rectangle {
+          id: pillWorking
           readonly property bool active: root.statusFilter === "working"
           height: Style.space(24)
-          width: Style.space(78)
+          width: pillWorkingRow.implicitWidth + Style.space(16)
           radius: Style.space(12)
-          color: active ? Qt.rgba(0.2, 0.6, 1.0, 0.4) : (root.workingAgents > 0 ? Qt.rgba(0.2, 0.6, 1.0, 0.2) : (workingMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          color: active ? Qt.rgba(0.2, 0.6, 1.0, 0.4) : (root.workingAgents > 0 ? Qt.rgba(0.2, 0.6, 1.0, 0.2) : (workingMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
           border.color: active ? Color.accent : (root.workingAgents > 0 ? Color.accent : "transparent")
           border.width: active ? 2 : 1
 
           Row {
+            id: pillWorkingRow
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󱑎"; color: Color.accent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
@@ -509,15 +511,17 @@ BarWidget {
 
         // Blocked Pill
         Rectangle {
+          id: pillBlocked
           readonly property bool active: root.statusFilter === "blocked"
           height: Style.space(24)
-          width: Style.space(96)
+          width: pillBlockedRow.implicitWidth + Style.space(16)
           radius: Style.space(12)
-          color: active ? Qt.rgba(1.0, 0.2, 0.2, 0.45) : (root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : (blockedMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          color: active ? Qt.rgba(1.0, 0.2, 0.2, 0.45) : (root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : (blockedMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
           border.color: active ? Color.urgent : (root.blockedAgents > 0 ? Color.urgent : "transparent")
           border.width: active ? 2 : 1
 
           Row {
+            id: pillBlockedRow
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰅚"; color: Color.urgent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
@@ -538,15 +542,17 @@ BarWidget {
 
         // Done Pill
         Rectangle {
+          id: pillDone
           readonly property bool active: root.statusFilter === "done"
           height: Style.space(24)
-          width: Style.space(68)
+          width: pillDoneRow.implicitWidth + Style.space(16)
           radius: Style.space(12)
-          color: active ? Qt.rgba(0.2, 0.8, 0.4, 0.35) : (root.doneAgents > 0 ? Qt.rgba(0.2, 0.8, 0.4, 0.2) : (doneMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          color: active ? Qt.rgba(0.2, 0.8, 0.4, 0.35) : (root.doneAgents > 0 ? Qt.rgba(0.2, 0.8, 0.4, 0.2) : (doneMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
           border.color: active ? "#a6e3a1" : (root.doneAgents > 0 ? "#a6e3a1" : "transparent")
           border.width: active ? 2 : 1
 
           Row {
+            id: pillDoneRow
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰄬"; color: "#a6e3a1"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
@@ -567,15 +573,17 @@ BarWidget {
 
         // Idle Pill
         Rectangle {
+          id: pillIdle
           readonly property bool active: root.statusFilter === "idle"
           height: Style.space(24)
-          width: Style.space(68)
+          width: pillIdleRow.implicitWidth + Style.space(16)
           radius: Style.space(12)
-          color: active ? Qt.rgba(1, 1, 1, 0.2) : (idleMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05))
+          color: active ? Qt.rgba(1, 1, 1, 0.2) : (idleMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05))
           border.color: active ? Color.foreground : "transparent"
           border.width: active ? 2 : 1
 
           Row {
+            id: pillIdleRow
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰌒"; color: active ? Color.foreground : Color.muted; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
@@ -597,12 +605,23 @@ BarWidget {
 
       // ---------- 2.5 Quick Search & Filter Bar ----------
       Rectangle {
+        id: searchBarBox
         width: parent.width
         height: Style.space(32)
         radius: Style.space(6)
         color: Qt.rgba(1, 1, 1, 0.05)
-        border.color: filterInput.activeFocus ? Color.accent : Qt.rgba(1, 1, 1, 0.1)
-        border.width: 1
+        border.color: filterInput.activeFocus ? Color.accent : (searchBoxMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.25) : Qt.rgba(1, 1, 1, 0.1))
+        border.width: filterInput.activeFocus ? 2 : 1
+
+        MouseArea {
+          id: searchBoxMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.IBeamCursor
+          onClicked: {
+            filterInput.forceActiveFocus()
+          }
+        }
 
         RowLayout {
           anchors.fill: parent
@@ -656,35 +675,73 @@ BarWidget {
             }
           }
 
-          TextInput {
-            id: filterInput
+          Item {
             Layout.fillWidth: true
-            color: root.bar ? root.bar.foreground : Color.foreground
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            clip: true
-            text: root.filterQuery
-            onTextChanged: {
-              root.filterQuery = text
-              root.selectedIndex = 0
-            }
-            Keys.onEscapePressed: function(event) {
-              if (text !== "") {
-                text = ""
-                root.filterQuery = ""
-              } else {
-                root.searchActive = false
-              }
-              event.accepted = true
-            }
+            Layout.fillHeight: true
 
-            Text {
+            TextInput {
+              id: filterInput
               anchors.fill: parent
-              visible: !filterInput.text && !filterInput.activeFocus
-              text: "Filter agents (/ or f)..."
-              color: Qt.rgba(1, 1, 1, 0.3)
+              verticalAlignment: TextInput.AlignVCenter
+              selectByMouse: true
+              mouseSelectionMode: TextInput.SelectCharacters
+              activeFocusOnTab: true
+              color: root.bar ? root.bar.foreground : Color.foreground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
+              clip: true
+              text: root.filterQuery
+              onTextChanged: {
+                root.filterQuery = text
+                root.selectedIndex = 0
+              }
+              Keys.onEscapePressed: function(event) {
+                if (text !== "") {
+                  text = ""
+                  root.filterQuery = ""
+                } else {
+                  root.close()
+                }
+                event.accepted = true
+              }
+              Keys.onDownPressed: function(event) {
+                if (root.filteredAgents.length > 0) {
+                  root.selectedIndex = Math.min(root.selectedIndex + 1, root.filteredAgents.length - 1)
+                }
+                event.accepted = true
+              }
+              Keys.onUpPressed: function(event) {
+                if (root.selectedIndex > 0) {
+                  root.selectedIndex--
+                }
+                event.accepted = true
+              }
+              Keys.onReturnPressed: function(event) {
+                if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
+                  var a = root.filteredAgents[root.selectedIndex]
+                  root.switchToHerdr(a.pane_id, a.session)
+                }
+                event.accepted = true
+              }
+
+              Text {
+                anchors.fill: parent
+                verticalAlignment: Text.AlignVCenter
+                visible: !filterInput.text && !filterInput.activeFocus
+                text: "Filter agents (/ or f)..."
+                color: Qt.rgba(1, 1, 1, 0.35)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.IBeamCursor
+              visible: !filterInput.activeFocus
+              onClicked: {
+                filterInput.forceActiveFocus()
+              }
             }
           }
 
@@ -701,6 +758,8 @@ BarWidget {
               onClicked: {
                 filterInput.text = ""
                 root.filterQuery = ""
+                root.selectedIndex = 0
+                filterInput.forceActiveFocus()
               }
             }
           }
