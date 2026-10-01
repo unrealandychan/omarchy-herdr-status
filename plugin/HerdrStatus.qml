@@ -25,19 +25,26 @@ BarWidget {
   property int nowSeconds: Math.floor(Date.now() / 1000)
   property bool notificationsEnabled: setting("notificationsEnabled", true)
   property string filterQuery: ""
+  property string statusFilter: "all"
   property bool searchActive: false
   property var previousAgentStatuses: ({})
 
   readonly property var filteredAgents: {
-    if (!root.filterQuery || root.filterQuery.trim() === "") return root.agents
-    var q = root.filterQuery.trim().toLowerCase()
+    var q = root.filterQuery ? root.filterQuery.trim().toLowerCase() : ""
+    var filter = root.statusFilter
     var out = []
     for (var i = 0; i < root.agents.length; i++) {
       var a = root.agents[i]
-      var hay = (a.name + " " + a.status + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
-      if (hay.indexOf(q) !== -1) {
-        out.push(a)
+      if (filter === "working" && !root.isWorkingStatus(a.status)) continue
+      if (filter === "blocked" && !root.isBlockedStatus(a.status)) continue
+      if (filter === "done" && !root.isDoneStatus(a.status)) continue
+      if (filter === "idle" && (root.isWorkingStatus(a.status) || root.isBlockedStatus(a.status) || root.isDoneStatus(a.status))) continue
+
+      if (q !== "") {
+        var hay = (a.name + " " + a.status + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
+        if (hay.indexOf(q) === -1) continue
       }
+      out.push(a)
     }
     return out
   }
@@ -103,10 +110,12 @@ BarWidget {
     if (s < 60) return s + "s"
     var mins = Math.floor(s / 60)
     var remSecs = s % 60
-    if (mins < 60) return mins + "m " + remSecs + "s"
+    if (mins < 60) {
+      return mins + "m " + (remSecs < 10 ? "0" : "") + remSecs + "s"
+    }
     var hours = Math.floor(mins / 60)
     var remMins = mins % 60
-    return hours + "h " + remMins + "m"
+    return hours + "h " + (remMins < 10 ? "0" : "") + remMins + "m"
   }
 
   onAgentsChanged: {
@@ -146,6 +155,7 @@ BarWidget {
 
   function openPopup() {
     root.selectedIndex = 0
+    root.statusFilter = "all"
     root.popupOpen = true
     if (root.bar && typeof root.bar.requestPopout === "function") {
       root.bar.requestPopout(root)
@@ -455,67 +465,117 @@ BarWidget {
 
         // Working Pill
         Rectangle {
+          readonly property bool active: root.statusFilter === "working"
           height: Style.space(24)
           width: Style.space(78)
           radius: Style.space(12)
-          color: root.workingAgents > 0 ? Qt.rgba(0.2, 0.6, 1.0, 0.2) : Qt.rgba(1, 1, 1, 0.05)
-          border.color: root.workingAgents > 0 ? Color.accent : "transparent"
-          border.width: 1
+          color: active ? Qt.rgba(0.2, 0.6, 1.0, 0.4) : (root.workingAgents > 0 ? Qt.rgba(0.2, 0.6, 1.0, 0.2) : (workingMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          border.color: active ? Color.accent : (root.workingAgents > 0 ? Color.accent : "transparent")
+          border.width: active ? 2 : 1
 
           Row {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󱑎"; color: Color.accent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.workingAgents + " working"; color: root.workingAgents > 0 ? Color.accent : Color.muted; font.pixelSize: Style.font.caption; font.bold: root.workingAgents > 0 }
+            Text { text: root.workingAgents + " working"; color: (active || root.workingAgents > 0) ? Color.accent : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.workingAgents > 0 }
+          }
+
+          MouseArea {
+            id: workingMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.statusFilter = (root.statusFilter === "working" ? "all" : "working")
+              root.selectedIndex = 0
+            }
           }
         }
 
         // Blocked Pill
         Rectangle {
+          readonly property bool active: root.statusFilter === "blocked"
           height: Style.space(24)
           width: Style.space(96)
           radius: Style.space(12)
-          color: root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : Qt.rgba(1, 1, 1, 0.05)
-          border.color: root.blockedAgents > 0 ? Color.urgent : "transparent"
-          border.width: 1
+          color: active ? Qt.rgba(1.0, 0.2, 0.2, 0.45) : (root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : (blockedMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          border.color: active ? Color.urgent : (root.blockedAgents > 0 ? Color.urgent : "transparent")
+          border.width: active ? 2 : 1
 
           Row {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰅚"; color: Color.urgent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.blockedAgents + " needs input"; color: root.blockedAgents > 0 ? Color.urgent : Color.muted; font.pixelSize: Style.font.caption; font.bold: root.blockedAgents > 0 }
+            Text { text: root.blockedAgents + " needs input"; color: (active || root.blockedAgents > 0) ? Color.urgent : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.blockedAgents > 0 }
+          }
+
+          MouseArea {
+            id: blockedMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.statusFilter = (root.statusFilter === "blocked" ? "all" : "blocked")
+              root.selectedIndex = 0
+            }
           }
         }
 
         // Done Pill
         Rectangle {
+          readonly property bool active: root.statusFilter === "done"
           height: Style.space(24)
           width: Style.space(68)
           radius: Style.space(12)
-          color: root.doneAgents > 0 ? Qt.rgba(0.2, 0.8, 0.4, 0.2) : Qt.rgba(1, 1, 1, 0.05)
-          border.color: root.doneAgents > 0 ? "#a6e3a1" : "transparent"
-          border.width: 1
+          color: active ? Qt.rgba(0.2, 0.8, 0.4, 0.35) : (root.doneAgents > 0 ? Qt.rgba(0.2, 0.8, 0.4, 0.2) : (doneMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)))
+          border.color: active ? "#a6e3a1" : (root.doneAgents > 0 ? "#a6e3a1" : "transparent")
+          border.width: active ? 2 : 1
 
           Row {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰄬"; color: "#a6e3a1"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.doneAgents + " done"; color: root.doneAgents > 0 ? "#a6e3a1" : Color.muted; font.pixelSize: Style.font.caption }
+            Text { text: root.doneAgents + " done"; color: (active || root.doneAgents > 0) ? "#a6e3a1" : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.doneAgents > 0 }
+          }
+
+          MouseArea {
+            id: doneMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.statusFilter = (root.statusFilter === "done" ? "all" : "done")
+              root.selectedIndex = 0
+            }
           }
         }
 
         // Idle Pill
         Rectangle {
+          readonly property bool active: root.statusFilter === "idle"
           height: Style.space(24)
           width: Style.space(68)
           radius: Style.space(12)
-          color: Qt.rgba(1, 1, 1, 0.05)
+          color: active ? Qt.rgba(1, 1, 1, 0.2) : (idleMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05))
+          border.color: active ? Color.foreground : "transparent"
+          border.width: active ? 2 : 1
 
           Row {
             anchors.centerIn: parent
             spacing: Style.space(4)
-            Text { text: "󰌒"; color: Color.muted; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.idleAgents + " ready"; color: Color.muted; font.pixelSize: Style.font.caption }
+            Text { text: "󰌒"; color: active ? Color.foreground : Color.muted; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
+            Text { text: root.idleAgents + " ready"; color: active ? Color.foreground : Color.muted; font.pixelSize: Style.font.caption; font.bold: active }
+          }
+
+          MouseArea {
+            id: idleMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.statusFilter = (root.statusFilter === "idle" ? "all" : "idle")
+              root.selectedIndex = 0
+            }
           }
         }
       }
@@ -540,6 +600,45 @@ BarWidget {
             color: filterInput.activeFocus ? Color.accent : Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
+          }
+
+          Rectangle {
+            visible: root.statusFilter !== "all"
+            Layout.preferredHeight: Style.space(20)
+            Layout.preferredWidth: filterChipRow.implicitWidth + Style.space(12)
+            radius: Style.space(10)
+            color: {
+              if (root.statusFilter === "blocked") return Qt.rgba(1.0, 0.2, 0.2, 0.3)
+              if (root.statusFilter === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.3)
+              if (root.statusFilter === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.3)
+              return Qt.rgba(1, 1, 1, 0.2)
+            }
+
+            Row {
+              id: filterChipRow
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text {
+                text: root.statusFilter === "blocked" ? "needs input" : (root.statusFilter === "idle" ? "ready" : root.statusFilter)
+                color: root.bar ? root.bar.foreground : Color.foreground
+                font.pixelSize: Style.font.caption * 0.85
+                font.bold: true
+              }
+              Text {
+                text: "✕"
+                color: Color.muted
+                font.pixelSize: Style.font.caption * 0.8
+              }
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.statusFilter = "all"
+                root.selectedIndex = 0
+              }
+            }
           }
 
           TextInput {
@@ -618,7 +717,9 @@ BarWidget {
 
         Text {
           visible: root.agents.length > 0 && root.filteredAgents.length === 0
-          text: "No agents matching \"" + root.filterQuery + "\"."
+          text: root.statusFilter !== "all"
+            ? "No " + (root.statusFilter === "idle" ? "ready" : (root.statusFilter === "blocked" ? "needs-input" : root.statusFilter)) + " agents."
+            : "No agents matching \"" + root.filterQuery + "\"."
           color: Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -713,8 +814,8 @@ BarWidget {
                   }
 
                   Rectangle {
-                    height: Style.space(16)
-                    width: statusText.implicitWidth + Style.space(8)
+                    Layout.preferredHeight: Style.space(16)
+                    Layout.preferredWidth: statusText.implicitWidth + Style.space(10)
                     radius: Style.space(4)
                     color: {
                       if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1, 0.2, 0.2, 0.2)
@@ -725,8 +826,11 @@ BarWidget {
 
                     Text {
                       id: statusText
-                      anchors.centerIn: parent
+                      anchors.verticalCenter: parent.verticalCenter
+                      anchors.left: parent.left
+                      anchors.leftMargin: Style.space(5)
                       textFormat: Text.PlainText
+                      font.features: { "tnum": 1 }
                       readonly property int elapsed: modelData.state_changed_at ? Math.max(0, root.nowSeconds - modelData.state_changed_at) : 0
                       text: root.statusLabel(modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
                       color: {
