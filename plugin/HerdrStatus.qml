@@ -354,8 +354,10 @@ BarWidget {
     contentHeight: popup.fittedContentHeight(panelContent.implicitHeight)
 
     FocusScope {
+      id: popupFocusScope
       anchors.fill: parent
-      focus: root.popupOpen
+      focus: root.popupOpen && (!filterInput || !filterInput.activeFocus)
+
       Keys.onEscapePressed: function(event) {
         root.close()
         event.accepted = true
@@ -396,7 +398,6 @@ BarWidget {
           }
           event.accepted = true
         } else if (event.key === Qt.Key_Slash || event.key === Qt.Key_F) {
-          root.searchActive = true
           filterInput.forceActiveFocus()
           event.accepted = true
         } else if (event.key === Qt.Key_R) {
@@ -405,12 +406,11 @@ BarWidget {
           event.accepted = true
         }
       }
-    }
 
-    Column {
-      id: panelContent
-      width: parent.width
-      spacing: Style.space(12)
+      Column {
+        id: panelContent
+        width: parent.width
+        spacing: Style.space(12)
 
       // ---------- 1. Header: Icon, Title, Status & Close ----------
       RowLayout {
@@ -604,163 +604,134 @@ BarWidget {
       }
 
       // ---------- 2.5 Quick Search & Filter Bar ----------
-      Rectangle {
-        id: searchBarBox
+      RowLayout {
         width: parent.width
-        height: Style.space(32)
-        radius: Style.space(6)
-        color: Qt.rgba(1, 1, 1, 0.05)
-        border.color: filterInput.activeFocus ? Color.accent : (searchBoxMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.25) : Qt.rgba(1, 1, 1, 0.1))
-        border.width: filterInput.activeFocus ? 2 : 1
+        spacing: Style.space(6)
 
-        MouseArea {
-          id: searchBoxMouse
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: Qt.IBeamCursor
-          onClicked: {
-            filterInput.forceActiveFocus()
+        Rectangle {
+          id: statusFilterChip
+          visible: root.statusFilter !== "all"
+          Layout.preferredHeight: Style.space(26)
+          Layout.preferredWidth: filterChipRow.implicitWidth + Style.space(14)
+          radius: Style.space(13)
+          color: {
+            if (root.statusFilter === "blocked") return Qt.rgba(1.0, 0.2, 0.2, 0.3)
+            if (root.statusFilter === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.3)
+            if (root.statusFilter === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.3)
+            return Qt.rgba(1, 1, 1, 0.2)
           }
-        }
-
-        RowLayout {
-          anchors.fill: parent
-          anchors.leftMargin: Style.space(8)
-          anchors.rightMargin: Style.space(8)
-          spacing: Style.space(6)
-
-          Text {
-            text: "󰍉"
-            color: filterInput.activeFocus ? Color.accent : Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
+          border.color: {
+            if (root.statusFilter === "blocked") return Color.urgent
+            if (root.statusFilter === "working") return Color.accent
+            if (root.statusFilter === "done") return "#a6e3a1"
+            return Color.muted
           }
+          border.width: 1
 
-          Rectangle {
-            visible: root.statusFilter !== "all"
-            Layout.preferredHeight: Style.space(20)
-            Layout.preferredWidth: filterChipRow.implicitWidth + Style.space(12)
-            radius: Style.space(10)
-            color: {
-              if (root.statusFilter === "blocked") return Qt.rgba(1.0, 0.2, 0.2, 0.3)
-              if (root.statusFilter === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.3)
-              if (root.statusFilter === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.3)
-              return Qt.rgba(1, 1, 1, 0.2)
-            }
-
-            Row {
-              id: filterChipRow
-              anchors.centerIn: parent
-              spacing: Style.space(4)
-              Text {
-                text: root.statusFilter === "blocked" ? "needs input" : (root.statusFilter === "idle" ? "ready" : root.statusFilter)
-                color: root.bar ? root.bar.foreground : Color.foreground
-                font.pixelSize: Style.font.caption * 0.85
-                font.bold: true
-              }
-              Text {
-                text: "✕"
-                color: Color.muted
-                font.pixelSize: Style.font.caption * 0.8
-              }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                root.statusFilter = "all"
-                root.selectedIndex = 0
-              }
-            }
-          }
-
-          Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            TextInput {
-              id: filterInput
-              anchors.fill: parent
-              verticalAlignment: TextInput.AlignVCenter
-              selectByMouse: true
-              mouseSelectionMode: TextInput.SelectCharacters
-              activeFocusOnTab: true
+          Row {
+            id: filterChipRow
+            anchors.centerIn: parent
+            spacing: Style.space(4)
+            Text {
+              text: root.statusFilter === "blocked" ? "needs input" : (root.statusFilter === "idle" ? "ready" : root.statusFilter)
               color: root.bar ? root.bar.foreground : Color.foreground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
-              clip: true
-              text: root.filterQuery
-              onTextChanged: {
-                root.filterQuery = text
-                root.selectedIndex = 0
-              }
-              Keys.onEscapePressed: function(event) {
-                if (text !== "") {
-                  text = ""
-                  root.filterQuery = ""
-                } else {
-                  root.close()
-                }
-                event.accepted = true
-              }
-              Keys.onDownPressed: function(event) {
-                if (root.filteredAgents.length > 0) {
-                  root.selectedIndex = Math.min(root.selectedIndex + 1, root.filteredAgents.length - 1)
-                }
-                event.accepted = true
-              }
-              Keys.onUpPressed: function(event) {
-                if (root.selectedIndex > 0) {
-                  root.selectedIndex--
-                }
-                event.accepted = true
-              }
-              Keys.onReturnPressed: function(event) {
-                if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
-                  var a = root.filteredAgents[root.selectedIndex]
-                  root.switchToHerdr(a.pane_id, a.session)
-                }
-                event.accepted = true
-              }
-
-              Text {
-                anchors.fill: parent
-                verticalAlignment: Text.AlignVCenter
-                visible: !filterInput.text && !filterInput.activeFocus
-                text: "Filter agents (/ or f)..."
-                color: Qt.rgba(1, 1, 1, 0.35)
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.caption
-              }
+              font.bold: true
             }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.IBeamCursor
-              visible: !filterInput.activeFocus
-              onClicked: {
-                filterInput.forceActiveFocus()
-              }
+            Text {
+              text: "✕"
+              color: chipMouse.containsMouse ? Color.urgent : Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
             }
           }
 
+          MouseArea {
+            id: chipMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.statusFilter = "all"
+              root.selectedIndex = 0
+            }
+          }
+        }
+
+        TextField {
+          id: filterInput
+          Layout.fillWidth: true
+          Layout.preferredHeight: Style.space(32)
+          placeholderText: "Search agents (/ or f)..."
+          text: root.filterQuery
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          foreground: root.bar ? root.bar.foreground : Color.foreground
+          accent: Color.accent
+
+          onTextChanged: {
+            root.filterQuery = text
+            root.selectedIndex = 0
+          }
+
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape) {
+              if (text !== "") {
+                text = ""
+                root.filterQuery = ""
+              } else {
+                root.close()
+              }
+              event.accepted = true
+            } else if (event.key === Qt.Key_Down) {
+              if (root.filteredAgents.length > 0) {
+                root.selectedIndex = Math.min(root.selectedIndex + 1, root.filteredAgents.length - 1)
+              }
+              event.accepted = true
+            } else if (event.key === Qt.Key_Up) {
+              if (root.selectedIndex > 0) {
+                root.selectedIndex--
+              }
+              event.accepted = true
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              if (root.filteredAgents.length > 0 && root.selectedIndex < root.filteredAgents.length) {
+                var a = root.filteredAgents[root.selectedIndex]
+                root.switchToHerdr(a.pane_id, a.session)
+              }
+              event.accepted = true
+            }
+          }
+        }
+
+        Rectangle {
+          visible: root.filterQuery !== ""
+          Layout.preferredHeight: Style.space(26)
+          Layout.preferredWidth: Style.space(26)
+          radius: Style.space(13)
+          color: clearBtnMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.15) : Qt.rgba(1, 1, 1, 0.05)
+          border.color: clearBtnMouse.containsMouse ? Color.accent : "transparent"
+          border.width: 1
+
           Text {
-            visible: filterInput.text !== ""
+            anchors.centerIn: parent
             text: "󰅖"
-            color: Color.muted
+            color: clearBtnMouse.containsMouse ? Color.accent : Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
+          }
 
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                filterInput.text = ""
-                root.filterQuery = ""
-                root.selectedIndex = 0
-                filterInput.forceActiveFocus()
-              }
+          MouseArea {
+            id: clearBtnMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              filterInput.text = ""
+              root.filterQuery = ""
+              root.selectedIndex = 0
+              filterInput.forceActiveFocus()
             }
           }
         }
@@ -1016,5 +987,6 @@ BarWidget {
         }
       }
     }
+  }
   }
 }
