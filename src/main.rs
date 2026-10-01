@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -151,9 +151,220 @@ fn default_session() -> String {
     "default".to_string()
 }
 
+pub fn resolve_path(p: &str) -> PathBuf {
+    if p.starts_with("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(&p[2..]);
+        }
+    }
+    PathBuf::from(p)
+}
+
+pub fn normalize_status(raw: &str) -> &'static str {
+    match raw.trim().to_lowercase().as_str() {
+        "blocked" | "waiting" | "prompt" | "input" | "needs_input" | "permission" | "confirm" => {
+            "blocked"
+        }
+        "working" | "busy" | "running" | "thinking" | "generating" => "working",
+        "done" | "completed" | "finished" => "done",
+        "idle" | "ready" => "idle",
+        _ => "unknown",
+    }
+}
+
+pub fn is_interactive_tool(tool_name: &str) -> bool {
+    let lower = tool_name.trim().to_lowercase();
+    matches!(
+        lower.as_str(),
+        "ask"
+            | "goal_question"
+            | "goal_questionnaire"
+            | "propose_goal_draft"
+            | "confirm"
+            | "prompt_user"
+            | "user_input"
+    ) || lower.starts_with("ask_")
+        || lower.starts_with("question_")
+}
+
+pub fn inspect_session_lines(lines: &[String]) -> Option<&'static str> {
+    let mut pending_ask_question = false;
+    let mut pending_tool = false;
+    let mut last_assistant_text: Option<String> = None;
+    let mut session_exited = false;
+
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+
+        let msg_type = v.get("type").and_then(|t| t.as_str());
+        if msg_type == Some("message") {
+            if let Some(msg) = v.get("message") {
+                let role = msg.get("role").and_then(|r| r.as_str());
+                if role == Some("assistant") {
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                        for item in content {
+                            let item_type = item.get("type").and_then(|t| t.as_str());
+                            if item_type == Some("text") {
+                                if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
+                                    last_assistant_text = Some(txt.to_string());
+                                    pending_tool = false;
+                                    pending_ask_question = false;
+                                }
+                            } else if item_type == Some("toolCall") {
+                                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                pending_tool = true;
+                                if is_interactive_tool(name) {
+                                    pending_ask_question = true;
+                                }
+                            }
+                        }
+                    }
+                } else if role == Some("toolResult") {
+                    pending_tool = false;
+                    pending_ask_question = false;
+                }
+            }
+        } else if msg_type == Some("custom") {
+            let c_type = v.get("customType").and_then(|c| c.as_str());
+            if c_type == Some("session_exit") {
+                session_exited = true;
+                pending_tool = false;
+                pending_ask_question = false;
+            } else if c_type == Some("tool_execution_start") {
+                if let Some(data) = v.get("data") {
+                    let tool_name = data.get("toolName").and_then(|t| t.as_str()).unwrap_or("");
+                    pending_tool = true;
+                    if is_interactive_tool(tool_name) {
+                        pending_ask_question = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if session_exited {
+        Some("done")
+    } else if pending_ask_question {
+        Some("blocked")
+    } else if pending_tool {
+        Some("working")
+    } else if let Some(text) = last_assistant_text {
+        let trimmed = text.trim();
+        let end_slice = if trimmed.len() > 60 {
+            &trimmed[trimmed.len() - 60..]
+        } else {
+            trimmed
+        };
+        if end_slice.contains('?') {
+            Some("blocked")
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+pub fn inspect_session_tail(path: &Path) -> Option<&'static str> {
+    let mut file = fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let len = meta.len();
+    if len == 0 {
+        return None;
+    }
+    let seek_start = len.saturating_sub(64 * 1024);
+    if seek_start > 0 {
+        file.seek(SeekFrom::Start(seek_start)).ok()?;
+    }
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let trimmed = l.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    inspect_session_lines(&lines)
+}
+
+pub fn find_latest_pi_session_for_cwd(cwd: &str) -> Option<PathBuf> {
+    let home = env::var("HOME").ok()?;
+    let slug = format!("--{}--", cwd.trim_matches('/').replace('/', "-"));
+    let dir = PathBuf::from(home).join(".pi/agent/sessions").join(slug);
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut latest_file = None;
+    let mut latest_time = SystemTime::UNIX_EPOCH;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "jsonl") {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > latest_time {
+                            latest_time = modified;
+                            latest_file = Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    latest_file
+}
+
+pub fn determine_effective_status(
+    raw_status: &str,
+    agent_name: &str,
+    session_path: Option<&Path>,
+    cwd: &str,
+) -> String {
+    let norm = normalize_status(raw_status);
+    // Real-time Herdr "working" status is authoritative; do not downgrade active turns.
+    if norm == "working" {
+        return "working".to_string();
+    }
+    // If Herdr already explicitly flagged the agent as blocked, preserve it.
+    if norm == "blocked" {
+        return "blocked".to_string();
+    }
+
+    // Inspect session for Pi/OMP agents when Herdr reports idle, prompt, or unknown
+    let is_pi_or_omp = agent_name.eq_ignore_ascii_case("pi")
+        || agent_name.eq_ignore_ascii_case("omp");
+
+    if is_pi_or_omp {
+        let path_to_inspect = session_path
+            .map(|p| p.to_path_buf())
+            .or_else(|| {
+                let resolved_cwd = resolve_path(cwd);
+                find_latest_pi_session_for_cwd(&resolved_cwd.to_string_lossy())
+            });
+
+        if let Some(path) = path_to_inspect {
+            if let Some(override_status) = inspect_session_tail(&path) {
+                if override_status == "blocked" {
+                    return "blocked".to_string();
+                } else if override_status == "working" && norm == "idle" {
+                    return "working".to_string();
+                } else if override_status == "done" && norm == "idle" {
+                    return "done".to_string();
+                }
+            }
+        }
+    }
+
+    norm.to_string()
+}
+
 pub fn sort_agents_by_priority(agents: &mut [AgentInfo]) {
     agents.sort_by(|a, b| {
-        let rank = |status: &str| match status.trim().to_lowercase().as_str() {
+        let rank = |status: &str| match normalize_status(status) {
             "blocked" => 0,
             "done" => 1,
             "working" => 2,
@@ -211,7 +422,7 @@ pub fn compute_summary(agents: &[AgentInfo], connected: bool) -> StatusSummary {
     let mut unknown = 0;
 
     for a in agents {
-        match a.status.trim().to_lowercase().as_str() {
+        match normalize_status(&a.status) {
             "working" => working += 1,
             "blocked" => blocked += 1,
             "done" => done += 1,
@@ -535,7 +746,7 @@ fn fetch_agents_snapshot(
                     .as_str()
                     .or_else(|| item["terminal_title_stripped"].as_str())
                     .unwrap_or("agent");
-                let status = item["agent_status"].as_str().unwrap_or("unknown");
+                let raw_status = item["agent_status"].as_str().unwrap_or("unknown");
                 let pane_id = item["pane_id"].as_str().unwrap_or("");
                 let workspace_id = item["workspace_id"].as_str().unwrap_or("");
                 let tab_id = item["tab_id"].as_str().unwrap_or("");
@@ -544,6 +755,20 @@ fn fetch_agents_snapshot(
                 let focused = item["focused"].as_bool().unwrap_or(false);
 
                 if !pane_id.is_empty() {
+                    let session_val = item
+                        .get("agent_session")
+                        .and_then(|s| s.get("value"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("agent_session_path").and_then(|p| p.as_str()));
+                    let session_pbuf = session_val.map(resolve_path);
+
+                    let status = determine_effective_status(
+                        raw_status,
+                        name,
+                        session_pbuf.as_deref(),
+                        cwd,
+                    );
+
                     let state_changed_at = item
                         .get("state_changed_at")
                         .and_then(|t| t.as_u64())
@@ -551,7 +776,7 @@ fn fetch_agents_snapshot(
 
                     let info = AgentInfo::new_sanitized(
                         name,
-                        status,
+                        &status,
                         pane_id,
                         workspace_id,
                         tab_id,
@@ -597,7 +822,13 @@ pub fn process_event_json(
             if !raw_pane_id.is_empty() && !new_status.is_empty() {
                 let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
                 if let Some(agent) = agents_map.get_mut(&pane_key) {
-                    let sanitized_status = sanitize_field(new_status, MAX_STATUS_LEN);
+                    let effective = determine_effective_status(
+                        new_status,
+                        &agent.name,
+                        None,
+                        &agent.cwd,
+                    );
+                    let sanitized_status = sanitize_field(&effective, MAX_STATUS_LEN);
                     if agent.status != sanitized_status {
                         agent.status = sanitized_status;
                         agent.state_changed_at = data
@@ -654,12 +885,26 @@ pub fn process_event_json(
                     let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
                     let agent_name = pane.get("agent").and_then(|a| a.as_str());
                     if let Some(name) = agent_name {
-                        let status = pane["agent_status"].as_str().unwrap_or("unknown");
+                        let raw_status = pane["agent_status"].as_str().unwrap_or("unknown");
                         let cwd = pane["cwd"].as_str().unwrap_or("~");
                         let title = pane["terminal_title"].as_str().unwrap_or(name);
                         let workspace_id = pane["workspace_id"].as_str().unwrap_or("");
                         let tab_id = pane["tab_id"].as_str().unwrap_or("");
                         let focused = pane["focused"].as_bool().unwrap_or(false);
+
+                        let session_val = pane
+                            .get("agent_session")
+                            .and_then(|s| s.get("value"))
+                            .and_then(|v| v.as_str())
+                            .or_else(|| pane.get("agent_session_path").and_then(|p| p.as_str()));
+                        let session_pbuf = session_val.map(resolve_path);
+
+                        let status = determine_effective_status(
+                            raw_status,
+                            name,
+                            session_pbuf.as_deref(),
+                            cwd,
+                        );
 
                         let existing_agent = agents_map.get(&pane_key);
                         let existing_session = existing_agent
@@ -679,7 +924,7 @@ pub fn process_event_json(
 
                         let info = AgentInfo::new_sanitized(
                             name,
-                            status,
+                            &status,
                             &pane_key,
                             workspace_id,
                             tab_id,
@@ -1423,5 +1668,177 @@ mod tests {
         assert!(ok);
         assert!(buffer.len() <= MAX_OUTPUT_LINE_BYTES);
         assert!(payload.agents.len() <= MAX_AGENTS_COUNT);
+    }
+
+    #[test]
+    fn test_normalize_status() {
+        assert_eq!(normalize_status("blocked"), "blocked");
+        assert_eq!(normalize_status("WAITING"), "blocked");
+        assert_eq!(normalize_status("prompt"), "blocked");
+        assert_eq!(normalize_status("needs_input"), "blocked");
+        assert_eq!(normalize_status("permission"), "blocked");
+        assert_eq!(normalize_status("confirm"), "blocked");
+        assert_eq!(normalize_status("input"), "blocked");
+
+        assert_eq!(normalize_status("working"), "working");
+        assert_eq!(normalize_status("BUSY"), "working");
+        assert_eq!(normalize_status("running"), "working");
+        assert_eq!(normalize_status("thinking"), "working");
+        assert_eq!(normalize_status("generating"), "working");
+
+        assert_eq!(normalize_status("done"), "done");
+        assert_eq!(normalize_status("completed"), "done");
+        assert_eq!(normalize_status("finished"), "done");
+
+        assert_eq!(normalize_status("idle"), "idle");
+        assert_eq!(normalize_status("ready"), "idle");
+
+        assert_eq!(normalize_status("other_unexpected"), "unknown");
+    }
+
+    #[test]
+    fn test_inspect_session_lines_pending_ask_tool() {
+        let lines = vec![
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "name": "ask",
+                            "arguments": { "question": "Should I proceed with the migration?" }
+                        }
+                    ]
+                }
+            }).to_string(),
+        ];
+        assert_eq!(inspect_session_lines(&lines), Some("blocked"));
+    }
+
+    #[test]
+    fn test_inspect_session_lines_goal_question() {
+        let lines = vec![
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "name": "goal_question",
+                            "arguments": { "question": "Which architecture pattern do you prefer?" }
+                        }
+                    ]
+                }
+            }).to_string(),
+        ];
+        assert_eq!(inspect_session_lines(&lines), Some("blocked"));
+    }
+
+    #[test]
+    fn test_inspect_session_lines_tool_resolved() {
+        let lines = vec![
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "name": "ask",
+                            "arguments": { "question": "Should I proceed?" }
+                        }
+                    ]
+                }
+            }).to_string(),
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "call_123",
+                    "content": [ { "type": "text", "text": "Yes" } ]
+                }
+            }).to_string(),
+        ];
+        // Tool was answered; no pending question
+        assert_ne!(inspect_session_lines(&lines), Some("blocked"));
+    }
+
+    #[test]
+    fn test_inspect_session_lines_assistant_question_text() {
+        let lines = vec![
+            json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I noticed two approaches. Would you like me to use option A or option B?"
+                        }
+                    ]
+                }
+            }).to_string(),
+        ];
+        assert_eq!(inspect_session_lines(&lines), Some("blocked"));
+    }
+
+    #[test]
+    fn test_determine_effective_status_precedence() {
+        // Working takes precedence over transcript
+        assert_eq!(
+            determine_effective_status("working", "pi", None, "/home/arch"),
+            "working"
+        );
+        // Explicit blocked remains blocked
+        assert_eq!(
+            determine_effective_status("blocked", "pi", None, "/home/arch"),
+            "blocked"
+        );
+        // Raw waiting normalizes to blocked
+        assert_eq!(
+            determine_effective_status("waiting", "pi", None, "/home/arch"),
+            "blocked"
+        );
+        assert_eq!(
+            determine_effective_status("prompt", "claude", None, "/home/arch"),
+            "blocked"
+        );
+        // Idle without session remains idle
+        assert_eq!(
+            determine_effective_status("idle", "pi", None, "/nonexistent/path"),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn test_sort_agents_priority_with_waiting_and_prompt() {
+        let mut agents = vec![
+            make_agent("agent-idle", "idle", "w1:p1"),
+            make_agent("agent-waiting", "waiting", "w1:p2"),
+            make_agent("agent-prompt", "prompt", "w1:p3"),
+            make_agent("agent-working", "working", "w1:p4"),
+        ];
+        sort_agents_by_priority(&mut agents);
+        // Both "waiting" and "prompt" map to rank 0 (blocked)
+        assert!(agents[0].status == "waiting" || agents[0].status == "prompt");
+        assert!(agents[1].status == "waiting" || agents[1].status == "prompt");
+        assert_eq!(agents[2].status, "working");
+        assert_eq!(agents[3].status, "idle");
+    }
+
+    #[test]
+    fn test_compute_summary_counts_waiting_as_blocked() {
+        let agents = vec![
+            make_agent("pi", "waiting", "w1:p1"),
+            make_agent("claude", "prompt", "w1:p2"),
+            make_agent("codex", "working", "w1:p3"),
+        ];
+        let summary = compute_summary(&agents, true);
+        assert_eq!(summary.blocked, 2);
+        assert_eq!(summary.working, 1);
+        assert_eq!(summary.primary_status, "blocked");
+        assert_eq!(summary.status_color, "urgent");
     }
 }

@@ -42,11 +42,38 @@ BarWidget {
     return out
   }
 
+  function isBlockedStatus(s) {
+    if (!s) return false
+    var v = s.toLowerCase()
+    return v === "blocked" || v === "waiting" || v === "prompt" || v === "input" || v === "needs_input" || v === "permission" || v === "confirm"
+  }
+
+  function isWorkingStatus(s) {
+    if (!s) return false
+    var v = s.toLowerCase()
+    return v === "working" || v === "busy" || v === "running" || v === "thinking" || v === "generating"
+  }
+
+  function isDoneStatus(s) {
+    if (!s) return false
+    var v = s.toLowerCase()
+    return v === "done" || v === "completed" || v === "finished"
+  }
+
+  function statusLabel(s) {
+    if (isBlockedStatus(s)) return "needs input"
+    if (isWorkingStatus(s)) return "working"
+    if (isDoneStatus(s)) return "done"
+    if (!s || s.toLowerCase() === "idle" || s.toLowerCase() === "ready") return "ready"
+    return s
+  }
+
   function notifyAgentStatus(a) {
     if (!root.notificationsEnabled) return
-    var glyph = a.status === "blocked" ? "󰅚" : "󰄬"
-    var urgency = a.status === "blocked" ? "critical" : "normal"
-    var headline = (a.status === "blocked" ? "Agent Needs Input: " : "Agent Completed: ") + a.name
+    var blocked = root.isBlockedStatus(a.status)
+    var glyph = blocked ? "󰅚" : "󰄬"
+    var urgency = blocked ? "critical" : "normal"
+    var headline = (blocked ? "Agent Needs Input: " : "Agent Completed: ") + a.name
     var body = (a.title && a.title !== a.name ? (a.title + " · ") : "") + "Pane " + a.pane_id
     var paneArg = a.pane_id || ""
     var sessArg = a.session && a.session !== "default" ? a.session : ""
@@ -91,7 +118,7 @@ BarWidget {
     for (var i = 0; i < agents.length; i++) {
       var a = agents[i]
       var prev = root.previousAgentStatuses[a.pane_id]
-      if (prev && prev === "working" && (a.status === "blocked" || a.status === "done")) {
+      if (prev && root.isWorkingStatus(prev) && (root.isBlockedStatus(a.status) || root.isDoneStatus(a.status))) {
         root.notifyAgentStatus(a)
       }
       nextStatuses[a.pane_id] = a.status
@@ -178,10 +205,10 @@ BarWidget {
       for (var i = 0; i < root.agents.length; i++) {
         var a = root.agents[i]
         var icon = "󰌒"
-        if (a.status === "working") icon = "󱑎"
-        else if (a.status === "blocked") icon = "󰅚"
-        else if (a.status === "done") icon = "󰄬"
-        t += icon + " " + a.name + " [" + a.status + "] · " + a.pane_id + "\n"
+        if (root.isWorkingStatus(a.status)) icon = "󱑎"
+        else if (root.isBlockedStatus(a.status)) icon = "󰅚"
+        else if (root.isDoneStatus(a.status)) icon = "󰄬"
+        t += icon + " " + a.name + " [" + root.statusLabel(a.status) + "] · " + a.pane_id + "\n"
       }
     }
     t += "───────────────────────────\n"
@@ -232,10 +259,10 @@ BarWidget {
 
   function getFirstActionableAgent() {
     for (var i = 0; i < root.agents.length; i++) {
-      if (root.agents[i].status === "blocked") return root.agents[i]
+      if (root.isBlockedStatus(root.agents[i].status)) return root.agents[i]
     }
     for (var j = 0; j < root.agents.length; j++) {
-      if (root.agents[j].status === "working") return root.agents[j]
+      if (root.isWorkingStatus(root.agents[j].status)) return root.agents[j]
     }
     if (root.agents.length > 0) return root.agents[0]
     return null
@@ -446,7 +473,7 @@ BarWidget {
         // Blocked Pill
         Rectangle {
           height: Style.space(24)
-          width: Style.space(78)
+          width: Style.space(96)
           radius: Style.space(12)
           color: root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : Qt.rgba(1, 1, 1, 0.05)
           border.color: root.blockedAgents > 0 ? Color.urgent : "transparent"
@@ -456,7 +483,7 @@ BarWidget {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰅚"; color: Color.urgent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.blockedAgents + " blocked"; color: root.blockedAgents > 0 ? Color.urgent : Color.muted; font.pixelSize: Style.font.caption; font.bold: root.blockedAgents > 0 }
+            Text { text: root.blockedAgents + " needs input"; color: root.blockedAgents > 0 ? Color.urgent : Color.muted; font.pixelSize: Style.font.caption; font.bold: root.blockedAgents > 0 }
           }
         }
 
@@ -613,22 +640,22 @@ BarWidget {
             radius: Style.space(8)
             color: {
               if (isSelected) {
-                if (modelData.status === "blocked") return Qt.rgba(1.0, 0.25, 0.25, 0.22)
-                if (modelData.status === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.20)
-                if (modelData.status === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.16)
+                if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1.0, 0.25, 0.25, 0.22)
+                if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.20)
+                if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1.0, 0.16)
                 return Qt.rgba(1, 1, 1, 0.12)
               }
               if (agentMouse.containsMouse) return Qt.rgba(1, 1, 1, 0.08)
-              if (modelData.status === "blocked") return Qt.rgba(1.0, 0.25, 0.25, 0.12)
-              if (modelData.status === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.08)
-              if (modelData.status === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.05)
+              if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1.0, 0.25, 0.25, 0.12)
+              if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.08)
+              if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1.0, 0.05)
               return Qt.rgba(1, 1, 1, 0.03)
             }
             border.color: {
               if (isSelected) return Color.accent
-              if (modelData.status === "blocked") return Color.urgent
-              if (modelData.status === "done") return "#a6e3a1"
-              if (modelData.status === "working") return Color.accent
+              if (root.isBlockedStatus(modelData.status)) return Color.urgent
+              if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
+              if (root.isWorkingStatus(modelData.status)) return Color.accent
               return Qt.rgba(1, 1, 1, 0.1)
             }
             border.width: isSelected ? 2 : 1
@@ -651,15 +678,15 @@ BarWidget {
               // Status Icon Indicator
               Text {
                 text: {
-                  if (modelData.status === "working") return "󱑎"
-                  if (modelData.status === "blocked") return "󰅚"
-                  if (modelData.status === "done") return "󰄬"
+                  if (root.isWorkingStatus(modelData.status)) return "󱑎"
+                  if (root.isBlockedStatus(modelData.status)) return "󰅚"
+                  if (root.isDoneStatus(modelData.status)) return "󰄬"
                   return "󰌒"
                 }
                 color: {
-                  if (modelData.status === "blocked") return Color.urgent
-                  if (modelData.status === "working") return Color.accent
-                  if (modelData.status === "done") return "#a6e3a1"
+                  if (root.isBlockedStatus(modelData.status)) return Color.urgent
+                  if (root.isWorkingStatus(modelData.status)) return Color.accent
+                  if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
                   return Color.muted
                 }
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -690,9 +717,9 @@ BarWidget {
                     width: statusText.implicitWidth + Style.space(8)
                     radius: Style.space(4)
                     color: {
-                      if (modelData.status === "blocked") return Qt.rgba(1, 0.2, 0.2, 0.2)
-                      if (modelData.status === "working") return Qt.rgba(0.2, 0.6, 1, 0.2)
-                      if (modelData.status === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.2)
+                      if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1, 0.2, 0.2, 0.2)
+                      if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1, 0.2)
+                      if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.2)
                       return Qt.rgba(1, 1, 1, 0.1)
                     }
 
@@ -701,15 +728,15 @@ BarWidget {
                       anchors.centerIn: parent
                       textFormat: Text.PlainText
                       readonly property int elapsed: modelData.state_changed_at ? Math.max(0, root.nowSeconds - modelData.state_changed_at) : 0
-                      text: (modelData.status === "idle" ? "ready" : modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
+                      text: root.statusLabel(modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
                       color: {
-                        if (modelData.status === "blocked") return Color.urgent
-                        if (modelData.status === "working") return Color.accent
-                        if (modelData.status === "done") return "#a6e3a1"
+                        if (root.isBlockedStatus(modelData.status)) return Color.urgent
+                        if (root.isWorkingStatus(modelData.status)) return Color.accent
+                        if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
                         return Color.muted
                       }
                       font.pixelSize: Style.font.caption * 0.9
-                      font.bold: modelData.status === "blocked" || modelData.status === "done"
+                      font.bold: root.isBlockedStatus(modelData.status) || root.isDoneStatus(modelData.status)
                     }
                   }
                 }
