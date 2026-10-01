@@ -223,7 +223,9 @@ finally:
   fi
 fi
 
-echo "==> Triggering plugin rescan in Omarchy Shell..."
+echo "==> Reloading plugin in Omarchy Shell..."
+omarchy plugin disable arch.herdr-status 2>/dev/null || true
+omarchy plugin enable arch.herdr-status --section right 2>/dev/null || true
 omarchy-shell shell rescanPlugins 2>/dev/null || true
 
 echo "==> Installation complete! Check your top navigation bar."

@@ -29,19 +29,28 @@ BarWidget {
   property bool searchActive: false
   property var previousAgentStatuses: ({})
 
+  onStatusFilterChanged: {
+    if (selectedIndex >= filteredAgents.length) {
+      selectedIndex = Math.max(0, filteredAgents.length - 1)
+    }
+  }
+
   readonly property var filteredAgents: {
     var q = root.filterQuery ? root.filterQuery.trim().toLowerCase() : ""
     var filter = root.statusFilter
+    var list = root.agents || []
     var out = []
-    for (var i = 0; i < root.agents.length; i++) {
-      var a = root.agents[i]
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i]
+      if (!a) continue
+
       if (filter === "working" && !root.isWorkingStatus(a.status)) continue
       if (filter === "blocked" && !root.isBlockedStatus(a.status)) continue
       if (filter === "done" && !root.isDoneStatus(a.status)) continue
-      if (filter === "idle" && (root.isWorkingStatus(a.status) || root.isBlockedStatus(a.status) || root.isDoneStatus(a.status))) continue
+      if (filter === "idle" && !root.isIdleStatus(a.status)) continue
 
       if (q !== "") {
-        var hay = (a.name + " " + a.status + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
+        var hay = (a.name + " " + a.status + " " + root.statusLabel(a.status) + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
         if (hay.indexOf(q) === -1) continue
       }
       out.push(a)
@@ -65,6 +74,12 @@ BarWidget {
     if (!s) return false
     var v = s.toLowerCase()
     return v === "done" || v === "completed" || v === "finished"
+  }
+
+  function isIdleStatus(s) {
+    if (!s) return true
+    var v = s.toLowerCase()
+    return v === "idle" || v === "ready" || (!isWorkingStatus(v) && !isBlockedStatus(v) && !isDoneStatus(v))
   }
 
   function statusLabel(s) {
@@ -715,17 +730,40 @@ BarWidget {
           bottomPadding: Style.space(8)
         }
 
-        Text {
+        Row {
           visible: root.agents.length > 0 && root.filteredAgents.length === 0
-          text: root.statusFilter !== "all"
-            ? "No " + (root.statusFilter === "idle" ? "ready" : (root.statusFilter === "blocked" ? "needs-input" : root.statusFilter)) + " agents."
-            : "No agents matching \"" + root.filterQuery + "\"."
-          color: Color.muted
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
           anchors.horizontalCenter: parent.horizontalCenter
+          spacing: Style.space(6)
           topPadding: Style.space(8)
           bottomPadding: Style.space(8)
+
+          Text {
+            text: root.statusFilter !== "all"
+              ? "No " + (root.statusFilter === "idle" ? "ready" : (root.statusFilter === "blocked" ? "needs-input" : root.statusFilter)) + " agents."
+              : "No agents matching \"" + root.filterQuery + "\"."
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            text: "Clear filter"
+            color: Color.accent
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.statusFilter = "all"
+                root.filterQuery = ""
+                filterInput.text = ""
+                root.selectedIndex = 0
+              }
+            }
+          }
         }
 
         Repeater {
