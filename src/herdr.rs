@@ -161,6 +161,7 @@ pub fn agent_from_pane(pane: &Value, session_name: &str) -> Option<AgentInfo> {
             session: session_name.to_string(),
             state_changed_at: current_unix_timestamp(),
             session_ref,
+            state_change_seq: pane["state_change_seq"].as_u64(),
         }
         .sanitized(),
     )

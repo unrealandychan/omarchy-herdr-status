@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::herdr::{discover_herdr_sessions, fetch_agents_snapshot, stream_events_loop};
 use crate::payload::{emit_payload, AgentInfo, StatusPayload};
 use crate::standalone::detect_standalone_agents;
+use crate::timers::{default_state_path, StateTimers};
 
 /// How often new or restarted sessions are picked up.
 const SCAN_INTERVAL: Duration = Duration::from_secs(5);
@@ -24,28 +25,36 @@ enum Update {
 
 /// Connected sessions and their agents, keyed by session name.
 #[derive(Default)]
-struct Sessions(BTreeMap<String, AgentMap>);
+struct Sessions {
+    connected: BTreeMap<String, AgentMap>,
+    timers: StateTimers,
+}
 
 impl Sessions {
     fn apply(&mut self, update: Update) {
         match update {
             Update::Agents { session, agents } => {
-                self.0.insert(session, agents);
+                self.connected.insert(session, agents);
             }
             Update::Disconnected { session } => {
-                self.0.remove(&session);
+                self.connected.remove(&session);
             }
         }
     }
 
     /// Falls back to standalone processes when no session reports an agent.
-    fn payload(&self) -> StatusPayload {
-        let mut agents: Vec<AgentInfo> =
-            self.0.values().flat_map(|m| m.values().cloned()).collect();
+    fn payload(&mut self) -> StatusPayload {
+        let mut agents: Vec<AgentInfo> = self
+            .connected
+            .values()
+            .flat_map(|m| m.values().cloned())
+            .collect();
+        let connected: HashSet<&str> = self.connected.keys().map(String::as_str).collect();
+        self.timers.stamp(&mut agents, &connected);
         if agents.is_empty() {
             agents = detect_standalone_agents();
         }
-        StatusPayload::new(!self.0.is_empty(), agents)
+        StatusPayload::new(!self.connected.is_empty(), agents)
     }
 }
 
@@ -91,7 +100,10 @@ fn spawn_worker(
 pub fn run(explicit_socket: Option<&Path>) {
     let (tx, rx) = mpsc::channel();
     let running = Arc::new(Mutex::new(HashSet::new()));
-    let mut sessions = Sessions::default();
+    let mut sessions = Sessions {
+        timers: StateTimers::load(default_state_path()),
+        ..Default::default()
+    };
     let mut last_emitted: Option<(bool, Vec<AgentInfo>)> = None;
     let mut last_scan: Option<Instant> = None;
 
@@ -130,7 +142,10 @@ pub fn run(explicit_socket: Option<&Path>) {
 
 /// Prints one merged snapshot of all sessions.
 pub fn snapshot_once(explicit_socket: Option<&Path>) {
-    let mut sessions = Sessions::default();
+    let mut sessions = Sessions {
+        timers: StateTimers::load(default_state_path()),
+        ..Default::default()
+    };
     for (name, socket) in discover_herdr_sessions(explicit_socket) {
         match fetch_agents_snapshot(&socket, &name) {
             Ok(agents) => sessions.apply(Update::Agents {

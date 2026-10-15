@@ -50,6 +50,9 @@ pub struct AgentInfo {
     /// Transcript reference used to refine Pi/OMP status on later events; not emitted.
     #[serde(skip)]
     pub session_ref: Option<SessionRef>,
+    /// Herdr's per-pane state counter; detects status round-trips while the bridge was down.
+    #[serde(skip)]
+    pub state_change_seq: Option<u64>,
 }
 
 impl AgentInfo {

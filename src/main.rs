@@ -22,6 +22,7 @@ mod payload;
 mod pi;
 mod standalone;
 mod status;
+mod timers;
 
 use std::env;
 use std::path::PathBuf;
