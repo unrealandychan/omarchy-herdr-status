@@ -252,12 +252,13 @@ pub fn inspect_session_lines(lines: &[String]) -> Option<&'static str> {
         Some("working")
     } else if let Some(text) = last_assistant_text {
         let trimmed = text.trim();
-        let end_slice = if trimmed.len() > 60 {
-            &trimmed[trimmed.len() - 60..]
-        } else {
-            trimmed
-        };
-        if end_slice.contains('?') {
+        // Last 60 chars, sliced on a char boundary so multi-byte text cannot panic.
+        let end_slice = trimmed
+            .char_indices()
+            .rev()
+            .nth(59)
+            .map_or(trimmed, |(i, _)| &trimmed[i..]);
+        if end_slice.contains(['?', '？']) {
             Some("blocked")
         } else {
             None
@@ -1782,6 +1783,33 @@ mod tests {
             }).to_string(),
         ];
         assert_eq!(inspect_session_lines(&lines), Some("blocked"));
+    }
+
+    fn assistant_text_line(text: &str) -> String {
+        json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [ { "type": "text", "text": text } ]
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_inspect_session_lines_multibyte_text_does_not_panic() {
+        // Byte offset len-60 lands inside a 3-byte CJK char for this text.
+        let cjk = "好的，我已经完成了重构。".repeat(4) + "你想让我继续处理测试吗？";
+        assert_eq!(inspect_session_lines(&[assistant_text_line(&cjk)]), Some("blocked"));
+
+        let emoji = format!("{}x", "🦀".repeat(30));
+        assert_eq!(inspect_session_lines(&[assistant_text_line(&emoji)]), None);
+    }
+
+    #[test]
+    fn test_inspect_session_lines_only_checks_tail_for_question() {
+        let early_question = format!("Should I? {}", "Done with the refactor. ".repeat(5));
+        assert_eq!(inspect_session_lines(&[assistant_text_line(&early_question)]), None);
     }
 
     #[test]
