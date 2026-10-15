@@ -25,7 +25,8 @@ check_ownership() {
 
 get_unused_backup_path() {
   local target="$1"
-  local base="${target}.bak.$(date +%s)"
+  local base
+  base="${target}.bak.$(date +%s)"
   local backup="$base"
   local n=1
   while [ -e "$backup" ] || [ -L "$backup" ]; do

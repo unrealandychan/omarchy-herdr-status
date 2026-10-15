@@ -26,7 +26,8 @@ check_ownership() {
 
 get_unused_backup_path() {
   local target="$1"
-  local base="${target}.bak.$(date +%s)"
+  local base
+  base="${target}.bak.$(date +%s)"
   local backup="$base"
   local n=1
   while [ -e "$backup" ] || [ -L "$backup" ]; do
@@ -37,7 +38,7 @@ get_unused_backup_path() {
 }
 
 echo "==> Building Rust release binary..."
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR" || exit 1
 cargo build --locked --release
 
 mkdir -p "$HOME/.local/bin"
@@ -83,7 +84,7 @@ if [ -L "$STATE_DIR" ]; then
   echo "Error: $STATE_DIR is a symlink. Refusing to write receipt." >&2
   exit 1
 fi
-mkdir -m 700 -p "$STATE_DIR"
+mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 if [ ! -d "$STATE_DIR" ] || [ -L "$STATE_DIR" ]; then
   echo "Error: $STATE_DIR is not a directory. Refusing to write receipt." >&2
@@ -224,8 +225,12 @@ finally:
 fi
 
 echo "==> Reloading plugin in Omarchy Shell..."
-omarchy plugin disable arch.herdr-status 2>/dev/null || true
-omarchy plugin enable arch.herdr-status --section right 2>/dev/null || true
-omarchy-shell shell rescanPlugins 2>/dev/null || true
+omarchy-shell -q shell rescanPlugins
+if ! omarchy plugin list --json 2>/dev/null | grep -q '"id":"arch.herdr-status"[^}]*"enabled":true'; then
+  omarchy plugin enable arch.herdr-status --section right 2>/dev/null || true
+fi
+# The shell caches compiled QML per engine; disable/enable keeps the old
+# version, so restart to load the new widget.
+omarchy restart shell >/dev/null 2>&1 || true
 
 echo "==> Installation complete! Check your top navigation bar."
