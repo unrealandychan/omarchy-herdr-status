@@ -15,6 +15,7 @@ use crate::timers::{default_state_path, StateTimers};
 /// How often new or restarted sessions are picked up.
 const SCAN_INTERVAL: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_millis(2500);
+const STARTUP_WAIT: Duration = Duration::from_millis(300);
 
 type AgentMap = HashMap<String, AgentInfo>;
 
@@ -123,7 +124,13 @@ pub fn run(explicit_socket: Option<&Path>, detect_external: bool) {
             }
         }
 
-        match rx.recv_timeout(SCAN_INTERVAL) {
+        // Until the first payload is out, wait only briefly so "no Herdr" shows immediately.
+        let wait = if last_emitted.is_none() {
+            STARTUP_WAIT
+        } else {
+            SCAN_INTERVAL
+        };
+        match rx.recv_timeout(wait) {
             Ok(update) => sessions.apply(update),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => unreachable!("monitor holds a sender"),
