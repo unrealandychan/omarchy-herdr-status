@@ -26,7 +26,8 @@ check_ownership() {
 
 get_unused_backup_path() {
   local target="$1"
-  local base="${target}.bak.$(date +%s)"
+  local base
+  base="${target}.bak.$(date +%s)"
   local backup="$base"
   local n=1
   while [ -e "$backup" ] || [ -L "$backup" ]; do
@@ -37,7 +38,7 @@ get_unused_backup_path() {
 }
 
 echo "==> Building Rust release binary..."
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR" || exit 1
 cargo build --locked --release
 
 mkdir -p "$HOME/.local/bin"

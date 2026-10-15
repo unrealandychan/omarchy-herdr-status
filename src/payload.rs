@@ -283,7 +283,6 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-
     #[test]
     fn test_sort_agents_by_priority() {
         let mut agents = vec![
@@ -432,7 +431,8 @@ mod tests {
         assert_eq!(parsed["agents"][0]["name"], "pi");
         assert_eq!(parsed["agents"][0]["state_changed_at"], 1712345678);
 
-        let roundtrip: StatusPayload = serde_json::from_str(&serialized).expect("Deserialization failed");
+        let roundtrip: StatusPayload =
+            serde_json::from_str(&serialized).expect("Deserialization failed");
         assert_eq!(roundtrip.agents[0].state_changed_at, 1712345678);
     }
 
@@ -512,7 +512,11 @@ mod tests {
     fn test_emit_payload_to_bounds_oversized() {
         let mut many_agents = Vec::new();
         for i in 0..500 {
-            many_agents.push(make_agent(&format!("agent_{}", i), "working", &format!("pane_{}", i)));
+            many_agents.push(make_agent(
+                &format!("agent_{}", i),
+                "working",
+                &format!("pane_{}", i),
+            ));
         }
         let mut payload = StatusPayload {
             connected: true,

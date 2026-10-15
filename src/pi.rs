@@ -1,14 +1,12 @@
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub fn resolve_path(p: &str) -> PathBuf {
-    if p.starts_with("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(&p[2..]);
-        }
+    if let (Some(rest), Ok(home)) = (p.strip_prefix("~/"), env::var("HOME")) {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(p)
 }
@@ -120,16 +118,15 @@ pub fn inspect_session_tail(path: &Path) -> Option<&'static str> {
     if seek_start > 0 {
         file.seek(SeekFrom::Start(seek_start)).ok()?;
     }
-    let reader = BufReader::new(file);
-    let mut lines = Vec::new();
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            let trimmed = l.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
-            }
-        }
-    }
+    // Decode lossily: the seek can land mid-character, and one bad line must not hide the rest.
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    let lines: Vec<String> = String::from_utf8_lossy(&tail)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
     inspect_session_lines(&lines)
 }
 
@@ -187,13 +184,11 @@ fn find_latest_jsonl(dir: &Path) -> Option<PathBuf> {
 fn find_jsonl_for_id(dir: &Path, id: &str) -> Option<PathBuf> {
     let suffix = format!("_{}.jsonl", id);
     let exact = format!("{}.jsonl", id);
-    jsonl_files(dir)
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&suffix) || n == exact)
-        })
+    jsonl_files(dir).map(|e| e.path()).find(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(&suffix) || n == exact)
+    })
 }
 
 /// Resolves the transcript to inspect: an existing path, the file matching a session id
@@ -231,41 +226,39 @@ mod tests {
 
     #[test]
     fn test_inspect_session_lines_pending_ask_tool() {
-        let lines = vec![
-            json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "toolCall",
-                            "name": "ask",
-                            "arguments": { "question": "Should I proceed with the migration?" }
-                        }
-                    ]
-                }
-            }).to_string(),
-        ];
+        let lines = vec![json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "name": "ask",
+                        "arguments": { "question": "Should I proceed with the migration?" }
+                    }
+                ]
+            }
+        })
+        .to_string()];
         assert_eq!(inspect_session_lines(&lines), Some("blocked"));
     }
 
     #[test]
     fn test_inspect_session_lines_goal_question() {
-        let lines = vec![
-            json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "toolCall",
-                            "name": "goal_question",
-                            "arguments": { "question": "Which architecture pattern do you prefer?" }
-                        }
-                    ]
-                }
-            }).to_string(),
-        ];
+        let lines = vec![json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "toolCall",
+                        "name": "goal_question",
+                        "arguments": { "question": "Which architecture pattern do you prefer?" }
+                    }
+                ]
+            }
+        })
+        .to_string()];
         assert_eq!(inspect_session_lines(&lines), Some("blocked"));
     }
 
@@ -284,7 +277,8 @@ mod tests {
                         }
                     ]
                 }
-            }).to_string(),
+            })
+            .to_string(),
             json!({
                 "type": "message",
                 "message": {
@@ -292,7 +286,8 @@ mod tests {
                     "toolCallId": "call_123",
                     "content": [ { "type": "text", "text": "Yes" } ]
                 }
-            }).to_string(),
+            })
+            .to_string(),
         ];
         // Tool was answered; no pending question
         assert_ne!(inspect_session_lines(&lines), Some("blocked"));
@@ -332,7 +327,10 @@ mod tests {
     fn test_inspect_session_lines_multibyte_text_does_not_panic() {
         // Byte offset len-60 lands inside a 3-byte CJK char for this text.
         let cjk = "好的，我已经完成了重构。".repeat(4) + "你想让我继续处理测试吗？";
-        assert_eq!(inspect_session_lines(&[assistant_text_line(&cjk)]), Some("blocked"));
+        assert_eq!(
+            inspect_session_lines(&[assistant_text_line(&cjk)]),
+            Some("blocked")
+        );
 
         let emoji = format!("{}x", "🦀".repeat(30));
         assert_eq!(inspect_session_lines(&[assistant_text_line(&emoji)]), None);
@@ -341,7 +339,10 @@ mod tests {
     #[test]
     fn test_inspect_session_lines_only_checks_tail_for_question() {
         let early_question = format!("Should I? {}", "Done with the refactor. ".repeat(5));
-        assert_eq!(inspect_session_lines(&[assistant_text_line(&early_question)]), None);
+        assert_eq!(
+            inspect_session_lines(&[assistant_text_line(&early_question)]),
+            None
+        );
     }
 
     struct TempDir(PathBuf);
@@ -375,7 +376,10 @@ mod tests {
     #[test]
     fn test_session_ref_from_variants() {
         let id = json!({"agent_session": {"kind": "id", "value": "abc-123"}});
-        assert_eq!(session_ref_from(&id), Some(SessionRef::Id("abc-123".into())));
+        assert_eq!(
+            session_ref_from(&id),
+            Some(SessionRef::Id("abc-123".into()))
+        );
 
         let path = json!({"agent_session": {"kind": "path", "value": "/tmp/s.jsonl"}});
         assert_eq!(
@@ -451,5 +455,22 @@ mod tests {
             locate_pi_session_in(&root.0, Some(&sref), "/work/proj"),
             Some(explicit)
         );
+    }
+    #[test]
+    fn test_inspect_session_tail_survives_mid_char_seek() {
+        let dir = TempDir::new("tail");
+        let path = dir.0.join("s.jsonl");
+        // A first line long enough that the 64 KiB tail starts inside a multi-byte char.
+        let filler = assistant_text_line(&"é".repeat(40 * 1024));
+        let last = assistant_text_line("Should I run the migration now?");
+        fs::write(&path, format!("{}\n{}\n", filler, last)).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let seek_byte = bytes[bytes.len() - 64 * 1024];
+        assert_eq!(
+            seek_byte & 0xC0,
+            0x80,
+            "test must seek into the middle of an é"
+        );
+        assert_eq!(inspect_session_tail(&path), Some("blocked"));
     }
 }

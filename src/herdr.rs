@@ -126,8 +126,7 @@ pub fn agent_from_pane(pane: &Value, session_name: &str) -> Option<AgentInfo> {
     let name = pane["agent"].as_str()?;
     let cwd = pane["cwd"].as_str().unwrap_or("~");
     let raw_status = pane["agent_status"].as_str().unwrap_or("unknown");
-    let status =
-        determine_effective_status(raw_status, name, session_ref_from(pane).as_ref(), cwd);
+    let status = determine_effective_status(raw_status, name, session_ref_from(pane).as_ref(), cwd);
     Some(
         AgentInfo {
             name: name.to_string(),
@@ -168,7 +167,10 @@ pub fn fetch_agents_snapshot(
     read_bounded_line(&mut reader, &mut line, MAX_SOCKET_LINE_BYTES)?;
 
     let v: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
-    let items = v["result"]["agents"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let items = v["result"]["agents"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let agent_map = items
         .iter()
         .take(MAX_AGENTS_COUNT)
@@ -176,7 +178,8 @@ pub fn fetch_agents_snapshot(
             agent_from_pane(item, session_name).or_else(|| {
                 // agent.list entries are agents even when Herdr has no label for them.
                 let mut labelled = item.clone();
-                labelled["agent"] = json!(item["terminal_title_stripped"].as_str().unwrap_or("agent"));
+                labelled["agent"] =
+                    json!(item["terminal_title_stripped"].as_str().unwrap_or("agent"));
                 agent_from_pane(&labelled, session_name)
             })
         })
@@ -186,10 +189,7 @@ pub fn fetch_agents_snapshot(
     Ok(agent_map)
 }
 
-pub fn process_event_json(
-    trimmed: &str,
-    agents_map: &mut HashMap<String, AgentInfo>,
-) -> bool {
+pub fn process_event_json(trimmed: &str, agents_map: &mut HashMap<String, AgentInfo>) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
         return false;
     };
@@ -212,12 +212,8 @@ pub fn process_event_json(
             if !raw_pane_id.is_empty() && !new_status.is_empty() {
                 let pane_key = sanitize_field(raw_pane_id, MAX_ID_LEN);
                 if let Some(agent) = agents_map.get_mut(&pane_key) {
-                    let effective = determine_effective_status(
-                        new_status,
-                        &agent.name,
-                        None,
-                        &agent.cwd,
-                    );
+                    let effective =
+                        determine_effective_status(new_status, &agent.name, None, &agent.cwd);
                     let sanitized_status = sanitize_field(&effective, MAX_STATUS_LEN);
                     if agent.status != sanitized_status {
                         agent.status = sanitized_status;
@@ -242,7 +238,8 @@ pub fn process_event_json(
                             changed = true;
                         }
                     } else if let Some(agent_name) = data["agent"].as_str() {
-                        if agents_map.contains_key(&pane_key) || agents_map.len() < MAX_AGENTS_COUNT {
+                        if agents_map.contains_key(&pane_key) || agents_map.len() < MAX_AGENTS_COUNT
+                        {
                             let info = AgentInfo {
                                 name: agent_name.to_string(),
                                 status: "working".to_string(),
@@ -409,7 +406,10 @@ mod tests {
     #[test]
     fn test_process_event_pane_agent_status_changed() {
         let mut map = HashMap::new();
-        map.insert("w1:p1".to_string(), make_agent("agent-1", "working", "w1:p1"));
+        map.insert(
+            "w1:p1".to_string(),
+            make_agent("agent-1", "working", "w1:p1"),
+        );
 
         let event_json = r#"{
             "event": "pane_agent_status_changed",
@@ -547,7 +547,10 @@ mod tests {
     #[test]
     fn test_process_event_pane_closed() {
         let mut map = HashMap::new();
-        map.insert("w1:p1".to_string(), make_agent("agent-1", "working", "w1:p1"));
+        map.insert(
+            "w1:p1".to_string(),
+            make_agent("agent-1", "working", "w1:p1"),
+        );
 
         let closed_json = r#"{
             "event": "pane_closed",
@@ -613,7 +616,7 @@ mod tests {
 
         let mut reader = ChunkedReader {
             chunks: vec![
-                vec![0xF0, 0x9F],       // Split midway through 🦀
+                vec![0xF0, 0x9F],        // Split midway through 🦀
                 vec![0xA6, 0x80, b'\n'], // Rest of 🦀 and newline
             ],
             index: 0,

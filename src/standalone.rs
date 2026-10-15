@@ -4,8 +4,9 @@ use std::fs;
 use crate::payload::{current_unix_timestamp, AgentInfo, MAX_AGENTS_COUNT};
 
 pub fn detect_standalone_agents() -> Vec<AgentInfo> {
-    let known_agents: HashSet<&'static str> =
-        ["claude", "codex", "opencode", "gemini", "pi"].into_iter().collect();
+    let known_agents: HashSet<&'static str> = ["claude", "codex", "opencode", "gemini", "pi"]
+        .into_iter()
+        .collect();
     let mut detected = Vec::new();
 
     if let Ok(entries) = fs::read_dir("/proc") {

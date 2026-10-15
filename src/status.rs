@@ -29,8 +29,8 @@ pub fn determine_effective_status(
     }
 
     // Inspect session for Pi/OMP agents when Herdr reports idle, prompt, or unknown
-    let is_pi_or_omp = agent_name.eq_ignore_ascii_case("pi")
-        || agent_name.eq_ignore_ascii_case("omp");
+    let is_pi_or_omp =
+        agent_name.eq_ignore_ascii_case("pi") || agent_name.eq_ignore_ascii_case("omp");
 
     if is_pi_or_omp {
         let path_to_inspect =
