@@ -19,7 +19,6 @@ BarWidget {
   property int doneAgents: 0
   property int idleAgents: 0
   property int unknownAgents: 0
-  property string primaryStatus: "idle"
   property string badgeText: "󰚩 0"
   property string badgeIcon: "󰚩"
   property string statusColorRole: "muted"
@@ -29,7 +28,6 @@ BarWidget {
   property bool notificationsEnabled: setting("notificationsEnabled", true)
   property string filterQuery: ""
   property string statusFilter: "all"
-  property bool searchActive: false
   property var previousAgentStatuses: ({})
 
   onStatusFilterChanged: {
@@ -60,14 +58,44 @@ BarWidget {
 
   // The bridge emits canonical statuses (blocked|working|done|idle|unknown); this table is
   // the only place that maps them to presentation. `filter` is the status pill that lists it.
-  readonly property color doneColor: "#a6e3a1"
+  // `emphasis` scales card tints so attention states stand out; colors follow the theme.
   readonly property var statusStyles: ({
-    blocked: { icon: "󰅚", label: "needs input", color: Color.urgent, tint: Qt.rgba(1.0, 0.2, 0.2, 1), filter: "blocked" },
-    working: { icon: "󱑎", label: "working", color: Color.accent, tint: Qt.rgba(0.2, 0.6, 1.0, 1), filter: "working" },
-    done: { icon: "󰄬", label: "done", color: root.doneColor, tint: Qt.rgba(0.2, 0.8, 0.4, 1), filter: "done" },
-    idle: { icon: "󰌒", label: "ready", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" },
-    unknown: { icon: "󰚩", label: "unknown", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" }
+    blocked: { icon: "󰅚", label: "needs input", color: Color.urgent, emphasis: 1.0, bold: true, filter: "blocked" },
+    working: { icon: "󱑎", label: "working", color: Color.accent, emphasis: 0.5, bold: false, filter: "working" },
+    done: { icon: "󰄬", label: "done", color: root.doneColor, emphasis: 0.8, bold: true, filter: "done" },
+    idle: { icon: "󰌒", label: "ready", color: Color.muted, emphasis: 0.25, bold: false, filter: "idle" },
+    unknown: { icon: "󰚩", label: "unknown", color: Color.muted, emphasis: 0.25, bold: false, filter: "idle" }
   })
+
+  // Omarchy's Color has no success role; use the theme's green (color2), else the accent.
+  property color doneColor: Color.accent
+
+  function loadDoneColor(raw) {
+    var match = String(raw || "").match(/^\s*(?:green|color2)\s*=\s*["']?(#[0-9A-Fa-f]{6})/m)
+    root.doneColor = match ? match[1] : Color.accent
+  }
+
+  FileView {
+    id: themeColors
+    path: Color.currentThemePath + "/colors.toml"
+    printErrors: false
+    onLoaded: root.loadDoneColor(text())
+    onLoadFailed: root.loadDoneColor("")
+  }
+
+  // Theme switches arrive over shell IPC and update Color; re-read the palette with them.
+  Connections {
+    target: Color
+    function onAccentChanged() { themeColors.reload() }
+  }
+
+  function roleColor(role) {
+    if (role === "urgent") return Color.urgent
+    if (role === "accent") return Color.accent
+    if (role === "done") return root.doneColor
+    if (role === "foreground") return Color.foreground
+    return Color.muted
+  }
 
   function statusOf(s) {
     var v = String(s || "").trim().toLowerCase()
@@ -75,14 +103,8 @@ BarWidget {
   }
 
   function styleFor(s) {
-    return (root.statusStyles || {})[root.statusOf(s)] || { icon: "󰚩", label: "unknown", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" }
+    return (root.statusStyles || {})[root.statusOf(s)] || { icon: "󰚩", label: "unknown", color: Color.muted, emphasis: 0.25, bold: false, filter: "idle" }
   }
-
-  // Thin wrappers kept for the card/pill bindings below.
-  function isBlockedStatus(s) { return root.statusOf(s) === "blocked" }
-  function isWorkingStatus(s) { return root.statusOf(s) === "working" }
-  function isDoneStatus(s) { return root.statusOf(s) === "done" }
-  function statusLabel(s) { return root.styleFor(s).label }
 
   function notifyAgentStatus(a) {
     if (!root.notificationsEnabled) return
@@ -112,19 +134,6 @@ BarWidget {
     onTriggered: {
       root.nowSeconds = Math.floor(Date.now() / 1000)
     }
-  }
-
-  function formatDuration(seconds) {
-    var s = Math.max(0, Number(seconds) || 0)
-    if (s < 60) return s + "s"
-    var mins = Math.floor(s / 60)
-    var remSecs = s % 60
-    if (mins < 60) {
-      return mins + "m " + (remSecs < 10 ? "0" : "") + remSecs + "s"
-    }
-    var hours = Math.floor(mins / 60)
-    var remMins = mins % 60
-    return hours + "h " + (remMins < 10 ? "0" : "") + remMins + "m"
   }
 
   onAgentsChanged: {
@@ -209,13 +218,8 @@ BarWidget {
     }
   }
 
-  readonly property bool hasUrgent: blockedAgents > 0
-  readonly property bool isWorking: workingAgents > 0
-  readonly property bool isDone: doneAgents > 0 && !isWorking && !hasUrgent
-
-  readonly property color widgetActiveColor: hasUrgent
-    ? Color.urgent
-    : (isWorking ? Color.accent : (isDone ? root.doneColor : Color.foreground))
+  // The bridge picks the badge's color role (blocked > working > done > ready).
+  readonly property bool badgeActive: ["urgent", "accent", "done"].indexOf(root.statusColorRole) !== -1
 
   readonly property string displayText: root.vertical
     ? (root.badgeIcon + "\n" + root.totalAgents)
@@ -254,7 +258,6 @@ BarWidget {
         root.doneAgents = data.summary.done || 0
         root.idleAgents = data.summary.idle || 0
         root.unknownAgents = data.summary.unknown || 0
-        root.primaryStatus = data.summary.primary_status || "idle"
         root.badgeText = data.summary.badge_text || "󰚩 0"
         root.badgeIcon = data.summary.badge_icon || "󰚩"
         root.statusColorRole = data.summary.status_color || "muted"
@@ -293,11 +296,6 @@ BarWidget {
     return null
   }
 
-  function getFirstActionablePane() {
-    var act = getFirstActionableAgent()
-    return act ? act.pane_id : ""
-  }
-
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -308,7 +306,7 @@ BarWidget {
     stdout: SplitParser {
       onRead: function(line) { root.handleData(line) }
     }
-    onExited: function(exitCode) {
+    onExited: function(exitCode, exitStatus) {
       restartTimer.start()
     }
   }
@@ -332,8 +330,8 @@ BarWidget {
     fontSize: Style.font.caption
     horizontalMargin: 6
     tooltipText: root.tooltipDetails
-    active: root.hasUrgent || root.isWorking || root.isDone
-    activeColor: root.widgetActiveColor
+    active: root.badgeActive
+    activeColor: root.roleColor(root.statusColorRole)
     onPressed: function(btn) {
       root.triggerPress(btn)
     }
@@ -439,7 +437,7 @@ BarWidget {
 
           Text {
             text: root.connected
-              ? (root.totalAgents + " active session" + (root.totalAgents === 1 ? "" : "s"))
+              ? (root.totalAgents + " agent" + (root.totalAgents === 1 ? "" : "s"))
               : "Herdr disconnected"
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -450,8 +448,8 @@ BarWidget {
 
         // Close button
         Rectangle {
-          width: Style.space(24)
-          height: Style.space(24)
+          Layout.preferredWidth: Style.space(24)
+          Layout.preferredHeight: Style.space(24)
           radius: Style.space(4)
           color: closeMouse.containsMouse ? Color.muted : "transparent"
 
@@ -478,125 +476,26 @@ BarWidget {
         spacing: Style.space(8)
         width: parent.width
 
-        // Working Pill
-        Rectangle {
-          id: pillWorking
-          readonly property bool active: root.statusFilter === "working"
-          height: Style.space(24)
-          width: pillWorkingRow.implicitWidth + Style.space(16)
-          radius: Style.space(12)
-          color: active ? Qt.rgba(0.2, 0.6, 1.0, 0.4) : (root.workingAgents > 0 ? Qt.rgba(0.2, 0.6, 1.0, 0.2) : (workingMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
-          border.color: active ? Color.accent : (root.workingAgents > 0 ? Color.accent : "transparent")
-          border.width: active ? 2 : 1
+        Repeater {
+          model: [
+            { filter: "working", count: root.workingAgents, label: "working", loud: true },
+            { filter: "blocked", count: root.blockedAgents, label: "needs input", loud: true },
+            { filter: "done", count: root.doneAgents, label: "done", loud: true },
+            { filter: "idle", count: root.idleAgents + root.unknownAgents, label: "ready", loud: false }
+          ]
 
-          Row {
-            id: pillWorkingRow
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "󱑎"; color: Color.accent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.workingAgents + " working"; color: (active || root.workingAgents > 0) ? Color.accent : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.workingAgents > 0 }
-          }
-
-          MouseArea {
-            id: workingMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
+          StatusPill {
+            required property var modelData
+            readonly property var style: root.styleFor(modelData.filter)
+            icon: style.icon
+            label: modelData.label
+            count: modelData.count
+            active: root.statusFilter === modelData.filter
+            highlightCount: modelData.loud
+            tone: modelData.loud ? style.color : (active ? Color.foreground : Color.muted)
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             onClicked: {
-              root.statusFilter = (root.statusFilter === "working" ? "all" : "working")
-              root.selectedIndex = 0
-            }
-          }
-        }
-
-        // Blocked Pill
-        Rectangle {
-          id: pillBlocked
-          readonly property bool active: root.statusFilter === "blocked"
-          height: Style.space(24)
-          width: pillBlockedRow.implicitWidth + Style.space(16)
-          radius: Style.space(12)
-          color: active ? Qt.rgba(1.0, 0.2, 0.2, 0.45) : (root.blockedAgents > 0 ? Qt.rgba(1.0, 0.2, 0.2, 0.25) : (blockedMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
-          border.color: active ? Color.urgent : (root.blockedAgents > 0 ? Color.urgent : "transparent")
-          border.width: active ? 2 : 1
-
-          Row {
-            id: pillBlockedRow
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "󰅚"; color: Color.urgent; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.blockedAgents + " needs input"; color: (active || root.blockedAgents > 0) ? Color.urgent : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.blockedAgents > 0 }
-          }
-
-          MouseArea {
-            id: blockedMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.statusFilter = (root.statusFilter === "blocked" ? "all" : "blocked")
-              root.selectedIndex = 0
-            }
-          }
-        }
-
-        // Done Pill
-        Rectangle {
-          id: pillDone
-          readonly property bool active: root.statusFilter === "done"
-          height: Style.space(24)
-          width: pillDoneRow.implicitWidth + Style.space(16)
-          radius: Style.space(12)
-          color: active ? Qt.rgba(0.2, 0.8, 0.4, 0.35) : (root.doneAgents > 0 ? Qt.rgba(0.2, 0.8, 0.4, 0.2) : (doneMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05)))
-          border.color: active ? "#a6e3a1" : (root.doneAgents > 0 ? "#a6e3a1" : "transparent")
-          border.width: active ? 2 : 1
-
-          Row {
-            id: pillDoneRow
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "󰄬"; color: "#a6e3a1"; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.doneAgents + " done"; color: (active || root.doneAgents > 0) ? "#a6e3a1" : Color.muted; font.pixelSize: Style.font.caption; font.bold: active || root.doneAgents > 0 }
-          }
-
-          MouseArea {
-            id: doneMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.statusFilter = (root.statusFilter === "done" ? "all" : "done")
-              root.selectedIndex = 0
-            }
-          }
-        }
-
-        // Idle Pill
-        Rectangle {
-          id: pillIdle
-          readonly property bool active: root.statusFilter === "idle"
-          height: Style.space(24)
-          width: pillIdleRow.implicitWidth + Style.space(16)
-          radius: Style.space(12)
-          color: active ? Qt.rgba(1, 1, 1, 0.2) : (idleMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.05))
-          border.color: active ? Color.foreground : "transparent"
-          border.width: active ? 2 : 1
-
-          Row {
-            id: pillIdleRow
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "󰌒"; color: active ? Color.foreground : Color.muted; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: (root.idleAgents + root.unknownAgents) + " ready"; color: active ? Color.foreground : Color.muted; font.pixelSize: Style.font.caption; font.bold: active }
-          }
-
-          MouseArea {
-            id: idleMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.statusFilter = (root.statusFilter === "idle" ? "all" : "idle")
+              root.statusFilter = (root.statusFilter === modelData.filter ? "all" : modelData.filter)
               root.selectedIndex = 0
             }
           }
@@ -614,18 +513,9 @@ BarWidget {
           Layout.preferredHeight: Style.space(26)
           Layout.preferredWidth: filterChipRow.implicitWidth + Style.space(14)
           radius: Style.space(13)
-          color: {
-            if (root.statusFilter === "blocked") return Qt.rgba(1.0, 0.2, 0.2, 0.3)
-            if (root.statusFilter === "working") return Qt.rgba(0.2, 0.6, 1.0, 0.3)
-            if (root.statusFilter === "done") return Qt.rgba(0.2, 0.8, 0.4, 0.3)
-            return Qt.rgba(1, 1, 1, 0.2)
-          }
-          border.color: {
-            if (root.statusFilter === "blocked") return Color.urgent
-            if (root.statusFilter === "working") return Color.accent
-            if (root.statusFilter === "done") return "#a6e3a1"
-            return Color.muted
-          }
+          readonly property color tone: root.styleFor(root.statusFilter).color
+          color: Util.alpha(tone, 0.3)
+          border.color: tone
           border.width: 1
 
           Row {
@@ -633,7 +523,7 @@ BarWidget {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text {
-              text: root.statusFilter === "blocked" ? "needs input" : (root.statusFilter === "idle" ? "ready" : root.statusFilter)
+              text: root.styleFor(root.statusFilter).label
               color: root.bar ? root.bar.foreground : Color.foreground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -710,7 +600,7 @@ BarWidget {
           Layout.preferredHeight: Style.space(26)
           Layout.preferredWidth: Style.space(26)
           radius: Style.space(13)
-          color: clearBtnMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.15) : Qt.rgba(1, 1, 1, 0.05)
+          color: clearBtnMouse.containsMouse ? Util.alpha(Color.foreground, 0.15) : Util.alpha(Color.foreground, 0.05)
           border.color: clearBtnMouse.containsMouse ? Color.accent : "transparent"
           border.width: 1
 
@@ -741,7 +631,7 @@ BarWidget {
       Rectangle {
         width: parent.width
         height: 1
-        color: Qt.rgba(1, 1, 1, 0.1)
+        color: Util.alpha(Color.foreground, 0.1)
       }
 
       // ---------- 3. Agent List Section ----------
@@ -769,7 +659,7 @@ BarWidget {
 
           Text {
             text: root.statusFilter !== "all"
-              ? "No " + (root.statusFilter === "idle" ? "ready" : (root.statusFilter === "blocked" ? "needs-input" : root.statusFilter)) + " agents."
+              ? "No " + root.styleFor(root.statusFilter).label + " agents."
               : "No agents matching \"" + root.filterQuery + "\"."
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -799,140 +689,18 @@ BarWidget {
         Repeater {
           model: root.filteredAgents
 
-          Rectangle {
-            id: agentCard
+          AgentCard {
             required property var modelData
             required property int index
-            readonly property bool isSelected: root.selectedIndex === index
             width: parent.width
-            implicitHeight: agentRow.implicitHeight + Style.space(14)
-            radius: Style.space(8)
-            color: {
-              if (isSelected) {
-                if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1.0, 0.25, 0.25, 0.22)
-                if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.20)
-                if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1.0, 0.16)
-                return Qt.rgba(1, 1, 1, 0.12)
-              }
-              if (agentMouse.containsMouse) return Qt.rgba(1, 1, 1, 0.08)
-              if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1.0, 0.25, 0.25, 0.12)
-              if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.08)
-              if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1.0, 0.05)
-              return Qt.rgba(1, 1, 1, 0.03)
-            }
-            border.color: {
-              if (isSelected) return Color.accent
-              if (root.isBlockedStatus(modelData.status)) return Color.urgent
-              if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
-              if (root.isWorkingStatus(modelData.status)) return Color.accent
-              return Qt.rgba(1, 1, 1, 0.1)
-            }
-            border.width: isSelected ? 2 : 1
-
-            MouseArea {
-              id: agentMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onEntered: root.selectedIndex = index
-              onClicked: root.switchToHerdr(modelData.pane_id, modelData.session)
-            }
-
-            RowLayout {
-              id: agentRow
-              anchors.fill: parent
-              anchors.margins: Style.space(8)
-              spacing: Style.space(10)
-
-              // Status Icon Indicator
-              Text {
-                text: {
-                  if (root.isWorkingStatus(modelData.status)) return "󱑎"
-                  if (root.isBlockedStatus(modelData.status)) return "󰅚"
-                  if (root.isDoneStatus(modelData.status)) return "󰄬"
-                  return "󰌒"
-                }
-                color: {
-                  if (root.isBlockedStatus(modelData.status)) return Color.urgent
-                  if (root.isWorkingStatus(modelData.status)) return Color.accent
-                  if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
-                  return Color.muted
-                }
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.body
-                renderType: Text.NativeRendering
-              }
-
-              // Details
-              ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Style.space(2)
-
-                RowLayout {
-                  spacing: Style.space(6)
-
-                  Text {
-                    text: modelData.name
-                    textFormat: Text.PlainText
-                    color: root.bar ? root.bar.foreground : Color.foreground
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                    renderType: Text.NativeRendering
-                  }
-
-                  Rectangle {
-                    Layout.preferredHeight: Style.space(16)
-                    Layout.preferredWidth: statusText.implicitWidth + Style.space(10)
-                    radius: Style.space(4)
-                    color: {
-                      if (root.isBlockedStatus(modelData.status)) return Qt.rgba(1, 0.2, 0.2, 0.2)
-                      if (root.isWorkingStatus(modelData.status)) return Qt.rgba(0.2, 0.6, 1, 0.2)
-                      if (root.isDoneStatus(modelData.status)) return Qt.rgba(0.2, 0.8, 0.4, 0.2)
-                      return Qt.rgba(1, 1, 1, 0.1)
-                    }
-
-                    Text {
-                      id: statusText
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      anchors.leftMargin: Style.space(5)
-                      textFormat: Text.PlainText
-                      font.features: { "tnum": 1 }
-                      readonly property int elapsed: modelData.state_changed_at ? Math.max(0, root.nowSeconds - modelData.state_changed_at) : 0
-                      text: root.statusLabel(modelData.status) + (elapsed > 0 ? (" · " + root.formatDuration(elapsed)) : "")
-                      color: {
-                        if (root.isBlockedStatus(modelData.status)) return Color.urgent
-                        if (root.isWorkingStatus(modelData.status)) return Color.accent
-                        if (root.isDoneStatus(modelData.status)) return "#a6e3a1"
-                        return Color.muted
-                      }
-                      font.pixelSize: Style.font.caption * 0.9
-                      font.bold: root.isBlockedStatus(modelData.status) || root.isDoneStatus(modelData.status)
-                    }
-                  }
-                }
-
-                Text {
-                  text: (modelData.session && modelData.session !== "default" ? ("[" + modelData.session + "] ") : "") + (modelData.pane_id ? ("Pane " + modelData.pane_id + " · ") : "") + (modelData.title && modelData.title !== modelData.name ? (modelData.title + " · ") : "") + (modelData.cwd || "~")
-                  textFormat: Text.PlainText
-                  color: Color.muted
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideMiddle
-                  Layout.fillWidth: true
-                  renderType: Text.NativeRendering
-                }
-              }
-
-              // Jump / Action Icon
-              Text {
-                text: "󰞷"
-                color: agentMouse.containsMouse ? Color.accent : Color.muted
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.caption
-              }
-            }
+            agent: modelData
+            style: root.styleFor(modelData.status)
+            selected: root.selectedIndex === index
+            nowSeconds: root.nowSeconds
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            textColor: root.bar ? root.bar.foreground : Color.foreground
+            onHovered: root.selectedIndex = index
+            onActivated: root.switchToHerdr(modelData.pane_id, modelData.session)
           }
         }
 
@@ -967,7 +735,7 @@ BarWidget {
       Rectangle {
         width: parent.width
         height: 1
-        color: Qt.rgba(1, 1, 1, 0.1)
+        color: Util.alpha(Color.foreground, 0.1)
       }
 
       // ---------- 4. Footer Button: Switch to Herdr Screen ----------
@@ -975,7 +743,7 @@ BarWidget {
         width: parent.width
         height: Style.space(34)
         radius: Style.space(6)
-        color: herdrBtnMouse.containsMouse ? Color.accent : Qt.rgba(1, 1, 1, 0.08)
+        color: herdrBtnMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.08)
 
         Row {
           anchors.centerIn: parent
