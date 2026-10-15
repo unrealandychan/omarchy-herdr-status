@@ -150,7 +150,7 @@ The installer will:
 
 ## Installer Scope
 
-`install.sh` and `uninstall.sh` run as your user: no `sudo`, no `curl`/`wget`, and nothing is downloaded except the two exact-pinned crates (`serde`, `serde_json`) that `cargo build --locked` fetches from crates.io, verified against `Cargo.lock` checksums.
+`install.sh` and `uninstall.sh` run entirely as your user, without privilege escalation or download tools; nothing is downloaded except the two exact-pinned crates (`serde`, `serde_json`) that `cargo build --locked` fetches from crates.io, verified against `Cargo.lock` checksums.
 
 `install.sh` touches only these paths:
 
