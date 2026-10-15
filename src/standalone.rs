@@ -39,6 +39,7 @@ pub fn detect_standalone_agents() -> Vec<AgentInfo> {
                             source: "system".to_string(),
                             session: "system".to_string(),
                             state_changed_at: current_unix_timestamp(),
+                            ..Default::default()
                         }
                         .sanitized();
                         detected.push(info);

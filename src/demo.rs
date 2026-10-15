@@ -15,6 +15,7 @@ pub fn get_demo_agents() -> Vec<AgentInfo> {
             source: "herdr".to_string(),
             session: "default".to_string(),
             state_changed_at: now.saturating_sub(120),
+            ..Default::default()
         },
         AgentInfo {
             name: "codex".to_string(),
@@ -28,6 +29,7 @@ pub fn get_demo_agents() -> Vec<AgentInfo> {
             source: "herdr".to_string(),
             session: "default".to_string(),
             state_changed_at: now.saturating_sub(300),
+            ..Default::default()
         },
         AgentInfo {
             name: "claude".to_string(),
@@ -41,6 +43,7 @@ pub fn get_demo_agents() -> Vec<AgentInfo> {
             source: "herdr".to_string(),
             session: "default".to_string(),
             state_changed_at: now.saturating_sub(60),
+            ..Default::default()
         },
         AgentInfo {
             name: "pi".to_string(),
@@ -54,6 +57,7 @@ pub fn get_demo_agents() -> Vec<AgentInfo> {
             source: "herdr".to_string(),
             session: "default".to_string(),
             state_changed_at: now.saturating_sub(900),
+            ..Default::default()
         },
     ]
 }

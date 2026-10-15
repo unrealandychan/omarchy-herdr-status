@@ -1,8 +1,11 @@
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 pub fn resolve_path(p: &str) -> PathBuf {
     if let (Some(rest), Ok(home)) = (p.strip_prefix("~/"), env::var("HOME")) {
@@ -128,6 +131,30 @@ pub fn inspect_session_tail(path: &Path) -> Option<&'static str> {
         .map(str::to_string)
         .collect();
     inspect_session_lines(&lines)
+}
+
+type TailVerdict = Option<&'static str>;
+type TailCache = HashMap<PathBuf, (SystemTime, u64, TailVerdict)>;
+
+/// Like `inspect_session_tail`, but reuses the previous verdict while the file's
+/// size and mtime are unchanged, so repeated events and resyncs do not re-read it.
+pub fn inspect_session_tail_cached(path: &Path) -> TailVerdict {
+    static CACHE: OnceLock<Mutex<TailCache>> = OnceLock::new();
+    let meta = fs::metadata(path).ok()?;
+    let stamp = (meta.modified().ok()?, meta.len());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(&(mtime, len, verdict)) = cache.lock().ok()?.get(path) {
+        if (mtime, len) == stamp {
+            return verdict;
+        }
+    }
+    let verdict = inspect_session_tail(path);
+    let mut cache = cache.lock().ok()?;
+    if cache.len() >= 64 {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), (stamp.0, stamp.1, verdict));
+    verdict
 }
 
 /// How Herdr identifies an agent's session transcript (`agent_session.kind`).
@@ -472,5 +499,21 @@ mod tests {
             "test must seek into the middle of an é"
         );
         assert_eq!(inspect_session_tail(&path), Some("blocked"));
+    }
+    #[test]
+    fn test_inspect_session_tail_cached_tracks_file_changes() {
+        let dir = TempDir::new("cache");
+        let path = dir.0.join("s.jsonl");
+        fs::write(&path, assistant_text_line("All done.") + "\n").unwrap();
+        assert_eq!(inspect_session_tail_cached(&path), None);
+        assert_eq!(inspect_session_tail_cached(&path), None);
+
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(
+            &mut f,
+            (assistant_text_line("Shall I deploy?") + "\n").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(inspect_session_tail_cached(&path), Some("blocked"));
     }
 }

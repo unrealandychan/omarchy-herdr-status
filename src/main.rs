@@ -26,7 +26,7 @@ use std::env;
 use std::time::Duration;
 
 use demo::get_demo_agents;
-use herdr::{discover_herdr_sessions, fetch_agents_snapshot, stream_events_loop};
+use herdr::{discover_herdr_sessions, emit_agents, fetch_agents_snapshot, stream_events_loop};
 use payload::{emit_payload, StatusPayload};
 use standalone::detect_standalone_agents;
 
@@ -110,9 +110,13 @@ fn main() {
         if let Some((session_name, sock_path)) = sessions.first() {
             match fetch_agents_snapshot(sock_path, session_name) {
                 Ok(initial_agents) => {
-                    if let Err(e) =
-                        stream_events_loop(sock_path, session_name, initial_agents, args.once)
-                    {
+                    if let Err(e) = stream_events_loop(
+                        sock_path,
+                        session_name,
+                        initial_agents,
+                        args.once,
+                        &mut emit_agents,
+                    ) {
                         log!("event stream dropped: {}", e);
                     }
                 }

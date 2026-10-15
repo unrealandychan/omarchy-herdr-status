@@ -1,4 +1,4 @@
-use crate::pi::{inspect_session_tail, locate_pi_session_in, pi_sessions_root, SessionRef};
+use crate::pi::{inspect_session_tail_cached, locate_pi_session_in, pi_sessions_root, SessionRef};
 
 pub fn normalize_status(raw: &str) -> &'static str {
     match raw.trim().to_lowercase().as_str() {
@@ -37,7 +37,7 @@ pub fn determine_effective_status(
             pi_sessions_root().and_then(|root| locate_pi_session_in(&root, session, cwd));
 
         if let Some(path) = path_to_inspect {
-            if let Some(override_status) = inspect_session_tail(&path) {
+            if let Some(override_status) = inspect_session_tail_cached(&path) {
                 if override_status == "blocked" {
                     return "blocked".to_string();
                 } else if override_status == "working" && norm == "idle" {

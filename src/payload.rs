@@ -1,3 +1,4 @@
+use crate::pi::SessionRef;
 use crate::status::normalize_status;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -31,7 +32,7 @@ pub fn sanitize_field(s: &str, max_len: usize) -> String {
     out
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub name: String,
     pub status: String,
@@ -46,6 +47,9 @@ pub struct AgentInfo {
     pub session: String,
     #[serde(default = "current_unix_timestamp")]
     pub state_changed_at: u64,
+    /// Transcript reference used to refine Pi/OMP status on later events; not emitted.
+    #[serde(skip)]
+    pub session_ref: Option<SessionRef>,
 }
 
 impl AgentInfo {
@@ -275,6 +279,7 @@ pub fn make_agent(name: &str, status: &str, pane_id: &str) -> AgentInfo {
         source: "herdr".to_string(),
         session: "default".to_string(),
         state_changed_at: 0,
+        ..Default::default()
     }
 }
 
