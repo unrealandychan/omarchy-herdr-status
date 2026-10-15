@@ -292,37 +292,101 @@ pub fn inspect_session_tail(path: &Path) -> Option<&'static str> {
     inspect_session_lines(&lines)
 }
 
-pub fn find_latest_pi_session_for_cwd(cwd: &str) -> Option<PathBuf> {
-    let home = env::var("HOME").ok()?;
-    let slug = format!("--{}--", cwd.trim_matches('/').replace('/', "-"));
-    let dir = PathBuf::from(home).join(".pi/agent/sessions").join(slug);
-    if !dir.is_dir() {
-        return None;
+/// How Herdr identifies an agent's session transcript (`agent_session.kind`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionRef {
+    Path(PathBuf),
+    Id(String),
+}
+
+/// Reads `agent_session` ({kind, value}) or the legacy `agent_session_path` from a pane/agent object.
+pub fn session_ref_from(item: &Value) -> Option<SessionRef> {
+    if let Some(session) = item.get("agent_session") {
+        let value = session.get("value").and_then(|v| v.as_str())?;
+        if value.is_empty() {
+            return None;
+        }
+        return match session.get("kind").and_then(|k| k.as_str()) {
+            Some("id") => Some(SessionRef::Id(value.to_string())),
+            _ => Some(SessionRef::Path(resolve_path(value))),
+        };
     }
-    let mut latest_file = None;
-    let mut latest_time = SystemTime::UNIX_EPOCH;
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "jsonl") {
-                if let Ok(meta) = entry.metadata() {
-                    if let Ok(modified) = meta.modified() {
-                        if modified > latest_time {
-                            latest_time = modified;
-                            latest_file = Some(path);
-                        }
-                    }
-                }
+    item.get("agent_session_path")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+        .map(|p| SessionRef::Path(resolve_path(p)))
+}
+
+fn pi_sessions_root() -> Option<PathBuf> {
+    env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".pi/agent/sessions"))
+}
+
+fn pi_cwd_slug(cwd: &str) -> String {
+    format!("--{}--", cwd.trim_matches('/').replace('/', "-"))
+}
+
+fn jsonl_files(dir: &Path) -> impl Iterator<Item = fs::DirEntry> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+}
+
+fn find_latest_jsonl(dir: &Path) -> Option<PathBuf> {
+    jsonl_files(dir)
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+/// Pi names transcripts `<timestamp>_<session-id>.jsonl`.
+fn find_jsonl_for_id(dir: &Path, id: &str) -> Option<PathBuf> {
+    let suffix = format!("_{}.jsonl", id);
+    let exact = format!("{}.jsonl", id);
+    jsonl_files(dir)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&suffix) || n == exact)
+        })
+}
+
+/// Resolves the transcript to inspect: an existing path, the file matching a session id
+/// (cwd directory first, then any project directory), else the newest transcript for the cwd.
+pub fn locate_pi_session_in(
+    root: &Path,
+    session: Option<&SessionRef>,
+    cwd: &str,
+) -> Option<PathBuf> {
+    let cwd_dir = root.join(pi_cwd_slug(&resolve_path(cwd).to_string_lossy()));
+    match session {
+        Some(SessionRef::Path(p)) if p.is_absolute() && p.is_file() => return Some(p.clone()),
+        Some(SessionRef::Id(id)) => {
+            let found = find_jsonl_for_id(&cwd_dir, id).or_else(|| {
+                fs::read_dir(root)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .find_map(|e| find_jsonl_for_id(&e.path(), id))
+            });
+            if found.is_some() {
+                return found;
             }
         }
+        _ => {}
     }
-    latest_file
+    find_latest_jsonl(&cwd_dir)
 }
 
 pub fn determine_effective_status(
     raw_status: &str,
     agent_name: &str,
-    session_path: Option<&Path>,
+    session: Option<&SessionRef>,
     cwd: &str,
 ) -> String {
     let norm = normalize_status(raw_status);
@@ -340,12 +404,8 @@ pub fn determine_effective_status(
         || agent_name.eq_ignore_ascii_case("omp");
 
     if is_pi_or_omp {
-        let path_to_inspect = session_path
-            .map(|p| p.to_path_buf())
-            .or_else(|| {
-                let resolved_cwd = resolve_path(cwd);
-                find_latest_pi_session_for_cwd(&resolved_cwd.to_string_lossy())
-            });
+        let path_to_inspect =
+            pi_sessions_root().and_then(|root| locate_pi_session_in(&root, session, cwd));
 
         if let Some(path) = path_to_inspect {
             if let Some(override_status) = inspect_session_tail(&path) {
@@ -756,19 +816,9 @@ fn fetch_agents_snapshot(
                 let focused = item["focused"].as_bool().unwrap_or(false);
 
                 if !pane_id.is_empty() {
-                    let session_val = item
-                        .get("agent_session")
-                        .and_then(|s| s.get("value"))
-                        .and_then(|v| v.as_str())
-                        .or_else(|| item.get("agent_session_path").and_then(|p| p.as_str()));
-                    let session_pbuf = session_val.map(resolve_path);
-
-                    let status = determine_effective_status(
-                        raw_status,
-                        name,
-                        session_pbuf.as_deref(),
-                        cwd,
-                    );
+                    let session_ref = session_ref_from(item);
+                    let status =
+                        determine_effective_status(raw_status, name, session_ref.as_ref(), cwd);
 
                     let state_changed_at = item
                         .get("state_changed_at")
@@ -893,17 +943,11 @@ pub fn process_event_json(
                         let tab_id = pane["tab_id"].as_str().unwrap_or("");
                         let focused = pane["focused"].as_bool().unwrap_or(false);
 
-                        let session_val = pane
-                            .get("agent_session")
-                            .and_then(|s| s.get("value"))
-                            .and_then(|v| v.as_str())
-                            .or_else(|| pane.get("agent_session_path").and_then(|p| p.as_str()));
-                        let session_pbuf = session_val.map(resolve_path);
-
+                        let session_ref = session_ref_from(pane);
                         let status = determine_effective_status(
                             raw_status,
                             name,
-                            session_pbuf.as_deref(),
+                            session_ref.as_ref(),
                             cwd,
                         );
 
@@ -1810,6 +1854,113 @@ mod tests {
     fn test_inspect_session_lines_only_checks_tail_for_question() {
         let early_question = format!("Should I? {}", "Done with the refactor. ".repeat(5));
         assert_eq!(inspect_session_lines(&[assistant_text_line(&early_question)]), None);
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = env::temp_dir().join(format!(
+                "herdr-status-test-{}-{}-{:?}",
+                tag,
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+        fn touch(&self, rel: &str) -> PathBuf {
+            let p = self.0.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, "{}\n").unwrap();
+            p
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn test_session_ref_from_variants() {
+        let id = json!({"agent_session": {"kind": "id", "value": "abc-123"}});
+        assert_eq!(session_ref_from(&id), Some(SessionRef::Id("abc-123".into())));
+
+        let path = json!({"agent_session": {"kind": "path", "value": "/tmp/s.jsonl"}});
+        assert_eq!(
+            session_ref_from(&path),
+            Some(SessionRef::Path(PathBuf::from("/tmp/s.jsonl")))
+        );
+
+        let legacy = json!({"agent_session_path": "/tmp/legacy.jsonl"});
+        assert_eq!(
+            session_ref_from(&legacy),
+            Some(SessionRef::Path(PathBuf::from("/tmp/legacy.jsonl")))
+        );
+
+        assert_eq!(session_ref_from(&json!({"agent_session": null})), None);
+        assert_eq!(session_ref_from(&json!({})), None);
+    }
+
+    #[test]
+    fn test_locate_pi_session_by_id_in_cwd_dir() {
+        let root = TempDir::new("by-id");
+        let wanted = root.touch("--work-proj--/2026-10-15T00-00-00-000Z_abc-123.jsonl");
+        root.touch("--work-proj--/2026-10-15T09-00-00-000Z_newer-999.jsonl");
+        let sref = SessionRef::Id("abc-123".into());
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&sref), "/work/proj"),
+            Some(wanted)
+        );
+    }
+
+    #[test]
+    fn test_locate_pi_session_by_id_in_other_project_dir() {
+        // Agent started in /work/proj then the pane cd'd elsewhere.
+        let root = TempDir::new("by-id-other");
+        let wanted = root.touch("--work-proj--/2026-10-15T00-00-00-000Z_abc-123.jsonl");
+        let sref = SessionRef::Id("abc-123".into());
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&sref), "/work/elsewhere"),
+            Some(wanted)
+        );
+    }
+
+    #[test]
+    fn test_locate_pi_session_falls_back_to_cwd_latest() {
+        let root = TempDir::new("fallback");
+        let only = root.touch("--work-proj--/2026-10-15T00-00-00-000Z_zzz.jsonl");
+
+        let unknown_id = SessionRef::Id("not-there".into());
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&unknown_id), "/work/proj"),
+            Some(only.clone())
+        );
+
+        let missing_path = SessionRef::Path(root.0.join("missing.jsonl"));
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&missing_path), "/work/proj"),
+            Some(only.clone())
+        );
+
+        let relative = SessionRef::Path(PathBuf::from("abc-123"));
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&relative), "/work/proj"),
+            Some(only)
+        );
+    }
+
+    #[test]
+    fn test_locate_pi_session_existing_path_wins() {
+        let root = TempDir::new("path");
+        root.touch("--work-proj--/2026-10-15T00-00-00-000Z_zzz.jsonl");
+        let explicit = root.touch("elsewhere/session.jsonl");
+        let sref = SessionRef::Path(explicit.clone());
+        assert_eq!(
+            locate_pi_session_in(&root.0, Some(&sref), "/work/proj"),
+            Some(explicit)
+        );
     }
 
     #[test]
