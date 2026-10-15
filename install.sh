@@ -225,8 +225,12 @@ finally:
 fi
 
 echo "==> Reloading plugin in Omarchy Shell..."
-omarchy plugin disable arch.herdr-status 2>/dev/null || true
-omarchy plugin enable arch.herdr-status --section right 2>/dev/null || true
-omarchy-shell shell rescanPlugins 2>/dev/null || true
+omarchy-shell -q shell rescanPlugins
+if ! omarchy plugin list --json 2>/dev/null | grep -q '"id":"arch.herdr-status"[^}]*"enabled":true'; then
+  omarchy plugin enable arch.herdr-status --section right 2>/dev/null || true
+fi
+# The shell caches compiled QML per engine; disable/enable keeps the old
+# version, so restart to load the new widget.
+omarchy restart shell >/dev/null 2>&1 || true
 
 echo "==> Installation complete! Check your top navigation bar."
