@@ -18,6 +18,7 @@ BarWidget {
   property int blockedAgents: 0
   property int doneAgents: 0
   property int idleAgents: 0
+  property int unknownAgents: 0
   property string primaryStatus: "idle"
   property string badgeText: "󰚩 0"
   property string badgeIcon: "󰚩"
@@ -46,13 +47,10 @@ BarWidget {
       var a = list[i]
       if (!a) continue
 
-      if (filter === "working" && !root.isWorkingStatus(a.status)) continue
-      if (filter === "blocked" && !root.isBlockedStatus(a.status)) continue
-      if (filter === "done" && !root.isDoneStatus(a.status)) continue
-      if (filter === "idle" && !root.isIdleStatus(a.status)) continue
+      if (filter !== "all" && root.styleFor(a.status).filter !== filter) continue
 
       if (q !== "") {
-        var hay = (a.name + " " + a.status + " " + root.statusLabel(a.status) + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
+        var hay = (a.name + " " + a.status + " " + root.styleFor(a.status).label + " " + a.pane_id + " " + (a.title || "") + " " + (a.cwd || "") + " " + (a.session || "")).toLowerCase()
         if (hay.indexOf(q) === -1) continue
       }
       out.push(a)
@@ -60,42 +58,36 @@ BarWidget {
     return out
   }
 
-  function isBlockedStatus(s) {
-    if (!s) return false
-    var v = s.toLowerCase()
-    return v === "blocked" || v === "waiting" || v === "prompt" || v === "input" || v === "needs_input" || v === "permission" || v === "confirm"
+  // The bridge emits canonical statuses (blocked|working|done|idle|unknown); this table is
+  // the only place that maps them to presentation. `filter` is the status pill that lists it.
+  readonly property color doneColor: "#a6e3a1"
+  readonly property var statusStyles: ({
+    blocked: { icon: "󰅚", label: "needs input", color: Color.urgent, tint: Qt.rgba(1.0, 0.2, 0.2, 1), filter: "blocked" },
+    working: { icon: "󱑎", label: "working", color: Color.accent, tint: Qt.rgba(0.2, 0.6, 1.0, 1), filter: "working" },
+    done: { icon: "󰄬", label: "done", color: root.doneColor, tint: Qt.rgba(0.2, 0.8, 0.4, 1), filter: "done" },
+    idle: { icon: "󰌒", label: "ready", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" },
+    unknown: { icon: "󰚩", label: "unknown", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" }
+  })
+
+  function statusOf(s) {
+    var v = String(s || "").trim().toLowerCase()
+    return root.statusStyles && root.statusStyles[v] ? v : "unknown"
   }
 
-  function isWorkingStatus(s) {
-    if (!s) return false
-    var v = s.toLowerCase()
-    return v === "working" || v === "busy" || v === "running" || v === "thinking" || v === "generating"
+  function styleFor(s) {
+    return (root.statusStyles || {})[root.statusOf(s)] || { icon: "󰚩", label: "unknown", color: Color.muted, tint: Qt.rgba(1, 1, 1, 1), filter: "idle" }
   }
 
-  function isDoneStatus(s) {
-    if (!s) return false
-    var v = s.toLowerCase()
-    return v === "done" || v === "completed" || v === "finished"
-  }
-
-  function isIdleStatus(s) {
-    if (!s) return true
-    var v = s.toLowerCase()
-    return v === "idle" || v === "ready" || (!isWorkingStatus(v) && !isBlockedStatus(v) && !isDoneStatus(v))
-  }
-
-  function statusLabel(s) {
-    if (isBlockedStatus(s)) return "needs input"
-    if (isWorkingStatus(s)) return "working"
-    if (isDoneStatus(s)) return "done"
-    if (!s || s.toLowerCase() === "idle" || s.toLowerCase() === "ready") return "ready"
-    return s
-  }
+  // Thin wrappers kept for the card/pill bindings below.
+  function isBlockedStatus(s) { return root.statusOf(s) === "blocked" }
+  function isWorkingStatus(s) { return root.statusOf(s) === "working" }
+  function isDoneStatus(s) { return root.statusOf(s) === "done" }
+  function statusLabel(s) { return root.styleFor(s).label }
 
   function notifyAgentStatus(a) {
     if (!root.notificationsEnabled) return
-    var blocked = root.isBlockedStatus(a.status)
-    var glyph = blocked ? "󰅚" : "󰄬"
+    var blocked = root.statusOf(a.status) === "blocked"
+    var glyph = root.styleFor(a.status).icon
     var urgency = blocked ? "critical" : "normal"
     var headline = (blocked ? "Agent Needs Input: " : "Agent Completed: ") + a.name
     var body = (a.title && a.title !== a.name ? (a.title + " · ") : "") + "Pane " + a.pane_id
@@ -136,20 +128,25 @@ BarWidget {
   }
 
   onAgentsChanged: {
-    if (selectedIndex >= filteredAgents.length) {
-      selectedIndex = Math.max(0, filteredAgents.length - 1)
+    // Also fires while the plugin is being created or torn down, when bindings are unset.
+    var list = root.agents || []
+    var shown = root.filteredAgents || []
+    var previous = root.previousAgentStatuses || {}
+    if (selectedIndex >= shown.length) {
+      selectedIndex = Math.max(0, shown.length - 1)
     }
 
     // Pane ids repeat across Herdr sessions, so key by session too.
     var nextStatuses = {}
-    for (var i = 0; i < agents.length; i++) {
-      var a = agents[i]
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i]
       var key = (a.session || "default") + "/" + a.pane_id
-      var prev = root.previousAgentStatuses[key]
-      if (prev && root.isWorkingStatus(prev) && (root.isBlockedStatus(a.status) || root.isDoneStatus(a.status))) {
+      var prev = previous[key]
+      var now = root.statusOf(a.status)
+      if (prev === "working" && (now === "blocked" || now === "done")) {
         root.notifyAgentStatus(a)
       }
-      nextStatuses[key] = a.status
+      nextStatuses[key] = now
     }
     root.previousAgentStatuses = nextStatuses
   }
@@ -218,7 +215,7 @@ BarWidget {
 
   readonly property color widgetActiveColor: hasUrgent
     ? Color.urgent
-    : (isWorking ? Color.accent : (isDone ? "#a6e3a1" : Color.foreground))
+    : (isWorking ? Color.accent : (isDone ? root.doneColor : Color.foreground))
 
   readonly property string displayText: root.vertical
     ? (root.badgeIcon + "\n" + root.totalAgents)
@@ -233,11 +230,8 @@ BarWidget {
     } else {
       for (var i = 0; i < root.agents.length; i++) {
         var a = root.agents[i]
-        var icon = "󰌒"
-        if (root.isWorkingStatus(a.status)) icon = "󱑎"
-        else if (root.isBlockedStatus(a.status)) icon = "󰅚"
-        else if (root.isDoneStatus(a.status)) icon = "󰄬"
-        t += icon + " " + a.name + " [" + root.statusLabel(a.status) + "] · " + a.pane_id + "\n"
+        var style = root.styleFor(a.status)
+        t += style.icon + " " + a.name + " [" + style.label + "] · " + a.pane_id + "\n"
       }
     }
     t += "───────────────────────────\n"
@@ -259,6 +253,7 @@ BarWidget {
         root.blockedAgents = data.summary.blocked || 0
         root.doneAgents = data.summary.done || 0
         root.idleAgents = data.summary.idle || 0
+        root.unknownAgents = data.summary.unknown || 0
         root.primaryStatus = data.summary.primary_status || "idle"
         root.badgeText = data.summary.badge_text || "󰚩 0"
         root.badgeIcon = data.summary.badge_icon || "󰚩"
@@ -289,10 +284,10 @@ BarWidget {
 
   function getFirstActionableAgent() {
     for (var i = 0; i < root.agents.length; i++) {
-      if (root.isBlockedStatus(root.agents[i].status)) return root.agents[i]
+      if (root.statusOf(root.agents[i].status) === "blocked") return root.agents[i]
     }
     for (var j = 0; j < root.agents.length; j++) {
-      if (root.isWorkingStatus(root.agents[j].status)) return root.agents[j]
+      if (root.statusOf(root.agents[j].status) === "working") return root.agents[j]
     }
     if (root.agents.length > 0) return root.agents[0]
     return null
@@ -592,7 +587,7 @@ BarWidget {
             anchors.centerIn: parent
             spacing: Style.space(4)
             Text { text: "󰌒"; color: active ? Color.foreground : Color.muted; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.caption }
-            Text { text: root.idleAgents + " ready"; color: active ? Color.foreground : Color.muted; font.pixelSize: Style.font.caption; font.bold: active }
+            Text { text: (root.idleAgents + root.unknownAgents) + " ready"; color: active ? Color.foreground : Color.muted; font.pixelSize: Style.font.caption; font.bold: active }
           }
 
           MouseArea {
