@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::herdr::{discover_herdr_sessions, fetch_agents_snapshot, stream_events_loop};
 use crate::payload::{emit_payload, AgentInfo, StatusPayload};
-use crate::standalone::detect_standalone_agents;
+use crate::standalone::detect_external_agents;
 use crate::timers::{default_state_path, StateTimers};
 
 /// How often new or restarted sessions are picked up.
@@ -28,6 +28,7 @@ enum Update {
 struct Sessions {
     connected: BTreeMap<String, AgentMap>,
     timers: StateTimers,
+    external: Vec<AgentInfo>,
 }
 
 impl Sessions {
@@ -42,7 +43,6 @@ impl Sessions {
         }
     }
 
-    /// Falls back to standalone processes when no session reports an agent.
     fn payload(&mut self) -> StatusPayload {
         let mut agents: Vec<AgentInfo> = self
             .connected
@@ -51,10 +51,9 @@ impl Sessions {
             .collect();
         let connected: HashSet<&str> = self.connected.keys().map(String::as_str).collect();
         self.timers.stamp(&mut agents, &connected);
-        if agents.is_empty() {
-            agents = detect_standalone_agents();
-        }
-        StatusPayload::new(!self.connected.is_empty(), agents)
+        let mut payload = StatusPayload::new(!self.connected.is_empty(), agents);
+        payload.external_agents = self.external.clone();
+        payload
     }
 }
 
@@ -97,19 +96,22 @@ fn spawn_worker(
 }
 
 /// Streams merged status for all sessions forever.
-pub fn run(explicit_socket: Option<&Path>) {
+pub fn run(explicit_socket: Option<&Path>, detect_external: bool) {
     let (tx, rx) = mpsc::channel();
     let running = Arc::new(Mutex::new(HashSet::new()));
     let mut sessions = Sessions {
         timers: StateTimers::load(default_state_path()),
         ..Default::default()
     };
-    let mut last_emitted: Option<(bool, Vec<AgentInfo>)> = None;
+    let mut last_emitted: Option<(bool, Vec<AgentInfo>, Vec<AgentInfo>)> = None;
     let mut last_scan: Option<Instant> = None;
 
     loop {
         if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
             last_scan = Some(Instant::now());
+            if detect_external {
+                sessions.external = detect_external_agents();
+            }
             let found = discover_herdr_sessions(explicit_socket);
             if let Ok(mut watched) = running.lock() {
                 for (name, socket) in found {
@@ -132,7 +134,11 @@ pub fn run(explicit_socket: Option<&Path>) {
         }
 
         let mut payload = sessions.payload();
-        let current = (payload.connected, payload.agents.clone());
+        let current = (
+            payload.connected,
+            payload.agents.clone(),
+            payload.external_agents.clone(),
+        );
         if last_emitted.as_ref() != Some(&current) {
             emit_payload(&mut payload);
             last_emitted = Some(current);
@@ -141,7 +147,7 @@ pub fn run(explicit_socket: Option<&Path>) {
 }
 
 /// Prints one merged snapshot of all sessions.
-pub fn snapshot_once(explicit_socket: Option<&Path>) {
+pub fn snapshot_once(explicit_socket: Option<&Path>, detect_external: bool) {
     let mut sessions = Sessions {
         timers: StateTimers::load(default_state_path()),
         ..Default::default()
@@ -154,6 +160,9 @@ pub fn snapshot_once(explicit_socket: Option<&Path>) {
             }),
             Err(e) => log!("session {}: cannot query {}: {}", name, socket.display(), e),
         }
+    }
+    if detect_external {
+        sessions.external = detect_external_agents();
     }
     emit_payload(&mut sessions.payload());
 }

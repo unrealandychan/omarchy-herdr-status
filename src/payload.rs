@@ -119,6 +119,9 @@ pub struct StatusPayload {
     pub connected: bool,
     pub agents: Vec<AgentInfo>,
     pub summary: StatusSummary,
+    /// Agent processes running outside Herdr (`--detect-external`); not in `summary`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_agents: Vec<AgentInfo>,
 }
 
 impl StatusPayload {
@@ -128,6 +131,7 @@ impl StatusPayload {
             connected,
             agents,
             summary,
+            external_agents: Vec::new(),
         }
     }
 }
@@ -237,8 +241,10 @@ pub fn emit_payload_to<W: Write>(payload: &mut StatusPayload, writer: &mut W) ->
     // Sort first so truncation drops the least urgent agents. The summary keeps the full counts.
     sort_agents_by_priority(&mut payload.agents);
     payload.agents.truncate(MAX_AGENTS_COUNT);
+    payload.external_agents.truncate(MAX_AGENTS_COUNT);
     if let Ok(mut serialized) = serde_json::to_string(payload) {
         if serialized.len() > MAX_OUTPUT_LINE_BYTES {
+            payload.external_agents.clear();
             while payload.agents.len() > 10 && serialized.len() > MAX_OUTPUT_LINE_BYTES {
                 payload.agents.truncate(payload.agents.len() / 2);
                 if let Ok(s) = serde_json::to_string(payload) {
@@ -257,6 +263,7 @@ pub fn emit_payload_to<W: Write>(payload: &mut StatusPayload, writer: &mut W) ->
                 connected: payload.connected,
                 agents: Vec::new(),
                 summary: payload.summary.clone(),
+                external_agents: Vec::new(),
             };
             if let Ok(min_ser) = serde_json::to_string(&minimal) {
                 if writeln!(writer, "{}", min_ser).is_err() || writer.flush().is_err() {
@@ -428,6 +435,7 @@ mod tests {
             connected: true,
             agents,
             summary,
+            external_agents: Vec::new(),
         };
 
         let serialized = serde_json::to_string(&payload).expect("Serialization failed");
@@ -468,6 +476,7 @@ mod tests {
             connected: true,
             agents: vec![make_agent("pi", "working", "w1:p1")],
             summary: compute_summary(&[], true),
+            external_agents: Vec::new(),
         };
         let mut buffer = Vec::new();
         let ok = emit_payload_to(&mut payload, &mut buffer);
@@ -499,6 +508,7 @@ mod tests {
             connected: true,
             agents: vec![make_agent("pi", "working", "w1:p1")],
             summary: compute_summary(&[], true),
+            external_agents: Vec::new(),
         };
         let mut writer = FailingWriter;
         let ok = emit_payload_to(&mut payload, &mut writer);
@@ -530,6 +540,7 @@ mod tests {
             connected: true,
             agents: many_agents,
             summary: compute_summary(&[], true),
+            external_agents: Vec::new(),
         };
         let mut buffer = Vec::new();
         let ok = emit_payload_to(&mut payload, &mut buffer);

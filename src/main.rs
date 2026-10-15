@@ -41,6 +41,9 @@ Options:
   --demo           Emit fixed demo agents (no Herdr connection)
   --socket <PATH>  Watch only this Herdr socket (also: HERDR_SOCKET);
                    default: every session under $XDG_CONFIG_HOME/herdr
+  --detect-external
+                   Also list agent processes running outside Herdr
+                   (status unknown, not counted in the summary)
   --verbose        Log diagnostics to stderr (also: HERDR_STATUS_LOG=1)
   -h, --help       Show this help
   -V, --version    Show version";
@@ -51,6 +54,7 @@ struct Args {
     demo: bool,
     socket: Option<String>,
     verbose: bool,
+    detect_external: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
@@ -61,6 +65,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, St
             "--once" => parsed.once = true,
             "--demo" => parsed.demo = true,
             "--verbose" => parsed.verbose = true,
+            "--detect-external" => parsed.detect_external = true,
             "--socket" => {
                 parsed.socket = Some(args.next().ok_or("--socket requires a path")?);
             }
@@ -108,9 +113,9 @@ fn main() {
         .map(PathBuf::from)
         .or_else(|| env::var_os("HERDR_SOCKET").map(PathBuf::from));
     if args.once {
-        monitor::snapshot_once(explicit_socket.as_deref());
+        monitor::snapshot_once(explicit_socket.as_deref(), args.detect_external);
     } else {
-        monitor::run(explicit_socket.as_deref());
+        monitor::run(explicit_socket.as_deref(), args.detect_external);
     }
 }
 
@@ -132,6 +137,7 @@ mod tests {
                 demo: false,
                 socket: Some("/tmp/h.sock".into()),
                 verbose: true,
+                detect_external: false,
             }))
         );
         assert!(parse(&["--socket"]).is_err());

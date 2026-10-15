@@ -11,6 +11,8 @@ BarWidget {
 
   property bool connected: false
   property var agents: []
+  property var externalAgents: []
+  property bool detectExternalAgents: setting("detectExternalAgents", false)
   property int totalAgents: 0
   property int workingAgents: 0
   property int blockedAgents: 0
@@ -250,6 +252,7 @@ BarWidget {
 
       root.connected = data.connected === true
       root.agents = data.agents || []
+      root.externalAgents = data.external_agents || []
       if (data.summary) {
         root.totalAgents = data.summary.total || 0
         root.workingAgents = data.summary.working || 0
@@ -305,7 +308,7 @@ BarWidget {
 
   Process {
     id: bridgeProc
-    command: ["herdr-status-bridge"]
+    command: root.detectExternalAgents ? ["herdr-status-bridge", "--detect-external"] : ["herdr-status-bridge"]
     running: true
     stdout: SplitParser {
       onRead: function(line) { root.handleData(line) }
@@ -935,6 +938,32 @@ BarWidget {
                 font.pixelSize: Style.font.caption
               }
             }
+          }
+        }
+
+        // Agents running outside Herdr (opt-in): state unknown, nothing to jump to.
+        Text {
+          visible: root.externalAgents.length > 0
+          text: "Outside Herdr"
+          color: Color.muted
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          topPadding: Style.space(4)
+        }
+
+        Repeater {
+          model: root.externalAgents
+
+          Text {
+            required property var modelData
+            width: parent.width
+            text: "󰚩 " + modelData.name + " · " + modelData.pane_id + " · " + (modelData.cwd || "~")
+            textFormat: Text.PlainText
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideMiddle
           }
         }
       }
