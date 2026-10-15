@@ -138,14 +138,16 @@ BarWidget {
       selectedIndex = Math.max(0, filteredAgents.length - 1)
     }
 
+    // Pane ids repeat across Herdr sessions, so key by session too.
     var nextStatuses = {}
     for (var i = 0; i < agents.length; i++) {
       var a = agents[i]
-      var prev = root.previousAgentStatuses[a.pane_id]
+      var key = (a.session || "default") + "/" + a.pane_id
+      var prev = root.previousAgentStatuses[key]
       if (prev && root.isWorkingStatus(prev) && (root.isBlockedStatus(a.status) || root.isDoneStatus(a.status))) {
         root.notifyAgentStatus(a)
       }
-      nextStatuses[a.pane_id] = a.status
+      nextStatuses[key] = a.status
     }
     root.previousAgentStatuses = nextStatuses
   }

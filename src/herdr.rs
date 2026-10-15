@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use crate::payload::*;
 use crate::pi::session_ref_from;
-use crate::standalone::detect_standalone_agents;
 use crate::status::determine_effective_status;
 
 pub fn read_bounded_line<R: BufRead>(
@@ -85,34 +84,41 @@ fn herdr_config_dir() -> Option<PathBuf> {
         .map(|config| config.join("herdr"))
 }
 
-pub fn locate_herdr_socket(override_path: Option<&str>) -> Option<PathBuf> {
-    let explicit = override_path
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HERDR_SOCKET").map(PathBuf::from));
-    explicit
-        .into_iter()
-        .chain(herdr_config_dir().map(|dir| dir.join("herdr.sock")))
-        .find(|p| p.exists())
+/// Session name for a socket path: `<config>/herdr/sessions/<name>/herdr.sock` → `<name>`.
+pub fn session_name_for(socket: &Path) -> String {
+    let dir = socket.parent();
+    match (
+        dir.and_then(Path::file_name),
+        dir.and_then(Path::parent).and_then(Path::file_name),
+    ) {
+        (Some(name), Some(parent)) if parent == "sessions" => name.to_string_lossy().to_string(),
+        _ => "default".to_string(),
+    }
 }
 
-// Scans for Herdr sessions across default and named sockets
-pub fn discover_herdr_sessions(override_socket: Option<&str>) -> Vec<(String, PathBuf)> {
-    if let Some(sock) = locate_herdr_socket(override_socket) {
-        return vec![("default".to_string(), sock)];
+/// Every running Herdr session: the default socket plus `sessions/*/herdr.sock`.
+/// An explicit socket replaces discovery entirely (no fallback when it is missing).
+pub fn discover_herdr_sessions(explicit_socket: Option<&Path>) -> Vec<(String, PathBuf)> {
+    if let Some(sock) = explicit_socket {
+        return if sock.exists() {
+            vec![(session_name_for(sock), sock.to_path_buf())]
+        } else {
+            Vec::new()
+        };
     }
-
-    let Some(sessions_dir) = herdr_config_dir().map(|dir| dir.join("sessions")) else {
+    let Some(config) = herdr_config_dir() else {
         return Vec::new();
     };
-    fs::read_dir(sessions_dir)
+    let default = config.join("herdr.sock");
+    let named = fs::read_dir(config.join("sessions"))
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let sock = entry.path().join("herdr.sock");
-            (sock.exists() && name != "default").then_some((name, sock))
-        })
+        .map(|entry| entry.path().join("herdr.sock"));
+    std::iter::once(default)
+        .chain(named)
+        .filter(|sock| sock.exists())
+        .map(|sock| (session_name_for(&sock), sock))
         .collect()
 }
 
@@ -268,6 +274,7 @@ pub struct EventEffect {
 
 pub fn process_event_json(
     trimmed: &str,
+    session_name: &str,
     agents_map: &mut HashMap<String, AgentInfo>,
 ) -> EventEffect {
     let mut effect = EventEffect::default();
@@ -326,8 +333,7 @@ pub fn process_event_json(
                 effect.new_pane = pane["pane_id"].as_str().map(str::to_string);
             }
             let existing = agents_map.get(&key);
-            let session = existing.map_or("default", |a| a.session.as_str());
-            if let Some(mut info) = agent_from_pane(pane, session) {
+            if let Some(mut info) = agent_from_pane(pane, session_name) {
                 if let Some(existing) = existing.filter(|e| e.status == info.status) {
                     info.state_changed_at = existing.state_changed_at;
                 }
@@ -372,15 +378,6 @@ fn resync(
     Ok(true)
 }
 
-/// Emits the connected payload, falling back to standalone processes when Herdr has no agents.
-pub fn emit_agents(agents_map: &HashMap<String, AgentInfo>) {
-    let mut list: Vec<AgentInfo> = agents_map.values().cloned().collect();
-    if list.is_empty() {
-        list = detect_standalone_agents();
-    }
-    emit_payload(&mut StatusPayload::new(true, list));
-}
-
 /// Follows one Herdr session, calling `on_change` with the full agent map whenever it changes.
 /// Returns when the server closes the connection.
 pub fn stream_events_loop(
@@ -418,7 +415,7 @@ pub fn stream_events_loop(
                     return Ok(());
                 }
                 Ok(_) => {
-                    effect = process_event_json(line.trim(), &mut agents_map);
+                    effect = process_event_json(line.trim(), session_name, &mut agents_map);
                     if effect.changed {
                         on_change(&agents_map);
                     }
@@ -470,6 +467,7 @@ mod tests {
         // Per-pane subscriptions deliver the dotted name; regular events the underscore one.
         let effect = process_event_json(
             &status_event("pane.agent_status_changed", "w1:p1", "blocked"),
+            "default",
             &mut map,
         );
         assert!(effect.changed);
@@ -479,6 +477,7 @@ mod tests {
 
         let effect = process_event_json(
             &status_event("pane_agent_status_changed", "w1:p1", "working"),
+            "default",
             &mut map,
         );
         assert!(effect.changed);
@@ -488,6 +487,7 @@ mod tests {
         map.get_mut("w1:p1").unwrap().state_changed_at = 42;
         let effect = process_event_json(
             &status_event("pane.agent_status_changed", "w1:p1", "working"),
+            "default",
             &mut map,
         );
         assert!(!effect.changed);
@@ -499,6 +499,7 @@ mod tests {
         let mut map = HashMap::new();
         let effect = process_event_json(
             &status_event("pane.agent_status_changed", "w1:p9", "idle"),
+            "default",
             &mut map,
         );
         assert_eq!(
@@ -534,13 +535,13 @@ mod tests {
                 }
             }
         }"#;
-        assert!(process_event_json(update_json, &mut map).changed);
+        assert!(process_event_json(update_json, "default", &mut map).changed);
         assert_eq!(map["w1:p1"].cwd, "/home/arch/new-dir");
         assert_eq!(map["w1:p1"].state_changed_at, 1710000000);
 
         // Update status: state_changed_at should be refreshed
         let status_change_json = update_json.replace("\"working\"", "\"done\"");
-        assert!(process_event_json(&status_change_json, &mut map).changed);
+        assert!(process_event_json(&status_change_json, "default", &mut map).changed);
         assert_eq!(map["w1:p1"].status, "done");
         assert!(map["w1:p1"].state_changed_at > 1710000000);
     }
@@ -555,7 +556,7 @@ mod tests {
                 "focused": false, "agent_status": "unknown", "revision": 0
             }}
         });
-        let effect = process_event_json(&created.to_string(), &mut map);
+        let effect = process_event_json(&created.to_string(), "default", &mut map);
         assert_eq!(effect.new_pane.as_deref(), Some("w1:p7"));
         assert!(!effect.changed, "a pane without an agent is not an agent");
         assert!(map.is_empty());
@@ -575,7 +576,7 @@ mod tests {
                 "agent": "codex"
             }
         }"#;
-        let effect = process_event_json(detect_json, &mut map);
+        let effect = process_event_json(detect_json, "default", &mut map);
         assert_eq!(
             effect,
             EventEffect {
@@ -596,7 +597,7 @@ mod tests {
                 "final_status": "done"
             }
         }"#;
-        assert!(process_event_json(release_json, &mut map).changed);
+        assert!(process_event_json(release_json, "default", &mut map).changed);
         assert!(!map.contains_key("w1:p5"));
     }
 
@@ -614,7 +615,7 @@ mod tests {
                 "pane_id": "w1:p1"
             }
         }"#;
-        assert!(process_event_json(closed_json, &mut map).changed);
+        assert!(process_event_json(closed_json, "default", &mut map).changed);
         assert!(!map.contains_key("w1:p1"));
     }
 
@@ -700,7 +701,7 @@ mod tests {
             }
         });
 
-        assert!(process_event_json(&event.to_string(), &mut map).changed);
+        assert!(process_event_json(&event.to_string(), "default", &mut map).changed);
         let expected_key = sanitize_field(&long_pane_id, MAX_ID_LEN);
         assert_eq!(expected_key.len(), MAX_ID_LEN);
         assert!(map.contains_key(&expected_key));
@@ -713,7 +714,7 @@ mod tests {
                 "pane_id": long_pane_id
             }
         });
-        assert!(process_event_json(&close_event.to_string(), &mut map).changed);
+        assert!(process_event_json(&close_event.to_string(), "default", &mut map).changed);
         assert!(!map.contains_key(&expected_key));
     }
     #[test]
@@ -729,5 +730,22 @@ mod tests {
         assert!(agent_from_pane(&json!({"pane_id": "w1:p1"}), "default").is_none());
         assert!(agent_from_pane(&json!({"agent": "claude"}), "default").is_none());
         assert!(agent_from_pane(&json!({"pane_id": "", "agent": "claude"}), "default").is_none());
+    }
+    #[test]
+    fn test_session_name_for() {
+        assert_eq!(
+            session_name_for(Path::new("/c/herdr/herdr.sock")),
+            "default"
+        );
+        assert_eq!(
+            session_name_for(Path::new("/c/herdr/sessions/work/herdr.sock")),
+            "work"
+        );
+        assert_eq!(session_name_for(Path::new("/tmp/custom.sock")), "default");
+    }
+
+    #[test]
+    fn test_explicit_socket_has_no_fallback() {
+        assert!(discover_herdr_sessions(Some(Path::new("/nonexistent/herdr.sock"))).is_empty());
     }
 }

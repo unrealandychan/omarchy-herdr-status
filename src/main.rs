@@ -17,18 +17,18 @@ macro_rules! log {
 
 mod demo;
 mod herdr;
+mod monitor;
 mod payload;
 mod pi;
 mod standalone;
 mod status;
 
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use demo::get_demo_agents;
-use herdr::{discover_herdr_sessions, emit_agents, fetch_agents_snapshot, stream_events_loop};
 use payload::{emit_payload, StatusPayload};
-use standalone::detect_standalone_agents;
 
 const USAGE: &str = "\
 Usage: herdr-status-bridge [OPTIONS]
@@ -38,7 +38,8 @@ Streams Herdr agent status as newline-delimited JSON on stdout.
 Options:
   --once           Print a single snapshot and exit
   --demo           Emit fixed demo agents (no Herdr connection)
-  --socket <PATH>  Use this Herdr socket instead of auto-discovery
+  --socket <PATH>  Watch only this Herdr socket (also: HERDR_SOCKET);
+                   default: every session under $XDG_CONFIG_HOME/herdr
   --verbose        Log diagnostics to stderr (also: HERDR_STATUS_LOG=1)
   -h, --help       Show this help
   -V, --version    Show version";
@@ -76,10 +77,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, St
     Ok(Some(parsed))
 }
 
-fn emit_disconnected() {
-    emit_payload(&mut StatusPayload::new(false, detect_standalone_agents()));
-}
-
 fn main() {
     let args = match parse_args(env::args().skip(1)) {
         Ok(Some(args)) => args,
@@ -105,36 +102,14 @@ fn main() {
         return;
     }
 
-    loop {
-        let sessions = discover_herdr_sessions(args.socket.as_deref());
-        if let Some((session_name, sock_path)) = sessions.first() {
-            match fetch_agents_snapshot(sock_path, session_name) {
-                Ok(initial_agents) => {
-                    if let Err(e) = stream_events_loop(
-                        sock_path,
-                        session_name,
-                        initial_agents,
-                        args.once,
-                        &mut emit_agents,
-                    ) {
-                        log!("event stream dropped: {}", e);
-                    }
-                }
-                Err(e) => {
-                    log!("cannot query {}: {}", sock_path.display(), e);
-                    emit_disconnected();
-                }
-            }
-        } else {
-            log!("no Herdr socket found");
-            emit_disconnected();
-        }
-
-        if args.once {
-            break;
-        }
-
-        std::thread::sleep(Duration::from_millis(2500));
+    let explicit_socket = args
+        .socket
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HERDR_SOCKET").map(PathBuf::from));
+    if args.once {
+        monitor::snapshot_once(explicit_socket.as_deref());
+    } else {
+        monitor::run(explicit_socket.as_deref());
     }
 }
 
