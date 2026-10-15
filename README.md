@@ -148,6 +148,29 @@ The installer will:
 
 ---
 
+## Installer Scope
+
+`install.sh` and `uninstall.sh` run as your user: no `sudo`, no `curl`/`wget`, and nothing is downloaded except the two exact-pinned crates (`serde`, `serde_json`) that `cargo build --locked` fetches from crates.io, verified against `Cargo.lock` checksums.
+
+`install.sh` touches only these paths:
+
+| Path | Change |
+|---|---|
+| `./target/` | `cargo build --locked --release` output inside the checkout |
+| `~/.local/bin/herdr-status-bridge` | Installed binary; a different existing file is moved to `*.bak.<timestamp>`, never overwritten |
+| `~/.local/bin/herdr-focus` | Installed helper (same backup rule) |
+| `${XDG_STATE_HOME:-~/.local/state}/omarchy/arch.herdr-status/install-receipt.json` | SHA-256 of both installed files and the source path (directory `0700`, file `0600`) |
+| `~/.config/omarchy/plugins/arch.herdr-status` | Symlink to the checkout; an existing different entry is moved to `*.bak.<timestamp>` |
+| `~/.config/omarchy/shell.json` | Backed up, then `{"id": "arch.herdr-status"}` is added to the bar's right section if absent, using an atomic replace that refuses symlinks and files owned by another user |
+
+It then runs `omarchy-shell shell rescanPlugins`, `omarchy plugin enable arch.herdr-status` (only if not already enabled) and `omarchy restart shell`.
+
+`uninstall.sh` removes a binary, helper or symlink only when its SHA-256 matches the receipt or it points into this checkout, and removes the widget entry from `shell.json` (after a backup) only when this checkout owns the installation.
+
+At runtime the bridge opens no network connections and starts no processes. It connects to Herdr's local sockets under `$XDG_CONFIG_HOME/herdr`, reads the tail of Pi session transcripts under `~/.pi/agent/sessions` (read-only), and writes one file: `$XDG_RUNTIME_DIR/herdr-status/state.json` (elapsed timers). With `--detect-external` it also reads `/proc` entries for your own processes. The widget runs `herdr-status-bridge`, `herdr-focus` (which calls `herdr`, `hyprctl`, `jq` and `omarchy-notification-send`) and `omarchy-notification-send`.
+
+---
+
 ## Removal & Uninstallation
 
 To completely remove Herdr Agent Status, run the uninstaller script:
